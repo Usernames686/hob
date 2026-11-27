@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { PluginHost } from "../src/plugin-host.ts";
-import { waitFor } from "./helpers.ts";
+import { listenHttp, waitFor } from "./helpers.ts";
 
 it("retries failed connections with backoff until the service recovers, and stops on disable", async () => {
   const home = mkdtempSync(join(tmpdir(), "hob-plugin-retry-"));
@@ -26,8 +26,8 @@ it("retries failed connections with backoff until the service recovers, and stop
     });
   });
   try {
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(31803, "127.0.0.1", resolve); });
-    host.store.addCustom("sample", { url: "http://127.0.0.1:31803/mcp" });
+    const base = await listenHttp(server);
+    host.store.addCustom("sample", { url: `${base}/mcp` });
     await host.start();
     expect(host.states("sample")[0].status).toBe("error");
     await waitFor(() => attempts >= 2, 6000);

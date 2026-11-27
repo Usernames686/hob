@@ -1,6 +1,8 @@
+import { assistantAbilities, assistantDetails, assistantGreeting, assistantNameError, assistantNameTaken, manualAssistantSprite } from "../../shared/assistant-create.ts";
 import { t } from "../../shared/i18n.ts";
 import { distinctSprite, parseSprite } from "../../shared/sprites.ts";
-import type { AnswerApprovalBody, Approval, ApprovalAnswer, ApprovalQuestion, Assistant, CardActionRequest, CardActionResult, CardElement, CardRecord, Draft, LoginEntryApproval } from "../../shared/types.ts";
+import { parsePetDirect } from "../../shared/pet.ts";
+import type { AnswerApprovalBody, Approval, ApprovalAnswer, ApprovalQuestion, Assistant, CardActionRequest, CardActionResult, CardElement, CardRecord, CreateAssistantBody, Draft, LoginEntryApproval } from "../../shared/types.ts";
 import { newId, slugify } from "./ids.ts";
 import { checkAssistantModels } from "./models.ts";
 import type { HobRuntime } from "./runtime.ts";
@@ -658,9 +660,10 @@ export async function updateAssistant(runtime: HobRuntime, id: string, body: Ass
     if (body.knowledge.some((item) => !collections.some((collection) => collection.id === item))) return { status: 400, body: { error: "知识库不存在。" } };
   }
   if (typeof body.sprite === "string" && body.sprite !== assistant.sprite) {
-    const parsed = parseSprite(body.sprite);
-    // custom 要有画法数据才收（画法在 prop 字段上，这里不改它）；否则渲染成空手火苗，不如拒绝
-    if (!parsed || (parsed.prop === "custom" && !assistant.prop)) return { status: 400, body: { error: "头像无效。" } };
+    const pet = parsePetDirect(body.sprite);
+    const parsed = pet ? undefined : parseSprite(body.sprite);
+    // 支持 20 种 GrokBot 宠物造型 + 11 色/#rrggbb，同时兼容历史像素道具
+    if (!pet && (!parsed || (parsed.prop === "custom" && !assistant.prop))) return { status: 400, body: { error: "头像无效。" } };
   }
   let models;
   let abilities;
@@ -700,64 +703,87 @@ export async function updateAssistant(runtime: HobRuntime, id: string, body: Ass
   return { status: 200, body: { assistant: summary } };
 }
 
-/** 草稿 → 真正创建助手：带规则、定时任务，两边对话各写一行说明。 */
+export function createAssistant(runtime: HobRuntime, body: CreateAssistantBody): Promise<ActionResult> {
+  return registerAssistant(runtime, { manual: body });
+}
+
 export async function createFromDraft(runtime: HobRuntime, draftId: string): Promise<ActionResult> {
-  const { store, bus, router, routines } = runtime;
-  const draft = store.draft(draftId);
+  const draft = runtime.store.draft(draftId);
   if (!draft) return { status: 404, body: { error: "草稿不存在" } };
   if (draft.status !== "pending") return { status: 409, body: { error: "这个草稿已处理" } };
-  const id = slugify(draft.name);
-  if (store.assistant(id)) {
-    return { status: 409, body: { error: `已存在名称为「${draft.name}」的助手` } };
+  return registerAssistant(runtime, { draft });
+}
+
+/** 只有对话创建携带草稿的规则、定时和来源。两个入口共用档案与会话初始化。 */
+async function registerAssistant(runtime: HobRuntime, source: { manual: CreateAssistantBody } | { draft: Draft }): Promise<ActionResult> {
+  const { store, bus, router } = runtime;
+  const draft = "draft" in source ? source.draft : undefined;
+  const body = "manual" in source ? source.manual : source.draft;
+  const nameError = assistantNameError(body?.name);
+  if (nameError) return { status: 400, body: { error: nameError } };
+  const name = body.name.trim();
+  const id = slugify(name);
+  const existing = store.assistants();
+  if (assistantNameTaken(existing, name, id)) {
+    return { status: 409, body: { error: t("已存在名称为「{name}」的助手", { name }) } };
   }
 
-  // 先把全部定时校验一遍：有一条不合法就整个不建，说清是哪条
-  for (const [index, item] of draft.routines.entries()) {
+  for (const [index, item] of (draft?.routines ?? []).entries()) {
     try { validate([item.schedule], runtime.settings.settings.general.timezone); }
     catch (error) { return { status: 400, body: { error: `第 ${index + 1} 条定时「${item.name}」：${error instanceof Error ? error.message : String(error)}` } }; }
   }
-
-  let cwd: string | undefined;
+  const now = new Date().toISOString();
+  let assistant: Assistant;
   try {
-    const normalized = normalizeWorkspaceCwdInput(draft.cwd);
-    if (normalized) cwd = validateWorkspaceCwd(normalized, runtime.home);
+    const details = assistantDetails(body);
+    const cwd = normalizeWorkspaceCwdInput(body.cwd);
+    const taken = existing.map(a => a.sprite);
+    assistant = {
+      ...details, id, duty: details.duty || t("专属助手"),
+      sprite: draft ? distinctSprite(draft.sprite, taken) : manualAssistantSprite(body.sprite, taken),
+      ...(cwd ? { cwd: validateWorkspaceCwd(cwd, runtime.home) } : {}),
+      ...(draft?.prop ? { prop: draft.prop } : {}),
+      ...(draft ? { splitFrom: { from: draft.assistantId, at: now } } : {}),
+      primary: false, pinned: false, hidden: false, notify: true, createdAt: now,
+    };
+    if ("manual" in source) {
+      assistant.abilities = assistantAbilities(source.manual.abilities);
+    }
   } catch (error) {
     return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } };
   }
 
-  const now = new Date().toISOString();
-  const assistant: Assistant = {
-    id,
-    name: draft.name,
-    duty: draft.duty,
-    dutyLong: draft.dutyLong,
-    ...(typeof draft.instructions === "string" && draft.instructions.trim() ? { instructions: draft.instructions.trim() } : {}),
-    ...(cwd ? { cwd } : {}),
-    // 和已有助手撞了头像就换个颜色（自画的图案各不相同，不算撞）
-    sprite: distinctSprite(draft.sprite, store.assistants().map((a) => a.sprite)),
-    ...(draft.prop ? { prop: draft.prop } : {}),
-    primary: false,
-    pinned: false,
-    hidden: false,
-    notify: true,
-    createdAt: now,
-    splitFrom: {
-      from: draft.assistantId,
-      at: now,
-    },
-  };
   store.saveAssistant(assistant);
+  try {
+    store.saveRules(id, (draft?.askFirst ?? []).map(text => ({ id: newId("r-"), text, mode: "ask" as const, changedAt: now })));
+    const origin = draft ? t("由 Hob 创建") : t("由你手动创建");
+    await router.addItem(id, { kind: "note", icon: "split", text: `${monthDayText(runtime.settings.settings.general.timezone)} ${origin}` });
+    const { savedRoutines, createdRoutines, routineReport } = createAssistantRoutines(runtime, id, draft?.routines ?? []);
+    await router.addItem(id, { kind: "assistant", text: [assistantGreeting(name, body.duty?.trim() ? assistant.duty : undefined), ...routineReport].join("\n") });
+    if (draft) {
+      await router.addItem(draft.assistantId, { kind: "note", icon: "split", text: t("已创建「{name}」", { name }) });
+      const created: Draft = { ...draft, routines: savedRoutines, routinesText: createdRoutines.join("、"), status: "created", createdAssistantId: id };
+      store.saveDraft(created);
+      bus.emit({ type: "draft", draft: created });
+    }
+    const summary = router.summary(assistant);
+    bus.emit({ type: "assistant", assistant: summary });
+    return { status: draft ? 200 : 201, body: { assistant: summary, ...(draft ? { routineReport } : {}) } };
+  } catch (error) {
+    for (const routine of store.routines().filter(r => r.assistantId === id)) runtime.routines.remove(routine.id);
+    router.forget(id);
+    store.deleteAssistant(id);
+    return { status: 500, body: { error: t("创建助手失败：{error}", { error: error instanceof Error ? error.message : String(error) }) } };
+  }
+}
 
-  store.saveRules(
-    assistant.id,
-    draft.askFirst.map((text) => ({ id: newId("r-"), text, mode: "ask" as const, changedAt: now })),
-  );
+function createAssistantRoutines(runtime: HobRuntime, id: string, entries: Draft["routines"]) {
   const createdRoutines: string[] = [];
   const savedRoutines: Draft["routines"] = [];
   const failedRoutines: string[] = [];
-  for (const item of draft.routines) {
+  for (const item of entries) {
     try {
-      routines.create({ assistantId: assistant.id, name: item.name, instruction: item.instruction, schedules: [item.schedule] });
+      runtime.routines.create({ assistantId: id, name: item.name, instruction: item.instruction, schedules: [item.schedule] });
       savedRoutines.push(item);
       createdRoutines.push(`${item.name} · ${cronToChinese(item.schedule)}`);
     } catch (error) {
@@ -769,23 +795,7 @@ export async function createFromDraft(runtime: HobRuntime, draftId: string): Pro
     ...(failedRoutines.length ? [t("定时处理失败：{items}", { items: failedRoutines.join("、") })] : []),
   ];
 
-  const splitNote = `${monthDayText(runtime.settings.settings.general.timezone)} ${t("由 Hob 创建")}`;
-  await router.ensure(assistant.id);
-  await router.addItem(assistant.id, { kind: "note", icon: "split", text: splitNote });
-  // 新助手自己的开场：固定模板，不过模型
-  await router.addItem(assistant.id, {
-    kind: "assistant",
-    text: [t("我是{assistant}，负责{duty}。", { assistant: assistant.name, duty: assistant.duty }), ...routineReport].join(
-      "\n",
-    ),
-  });
-  await router.addItem(draft.assistantId, { kind: "note", icon: "split", text: t("已创建「{name}」", { name: assistant.name }) });
-
-  const created: Draft = { ...draft, routines: savedRoutines, routinesText: createdRoutines.join("、"), status: "created", createdAssistantId: assistant.id };
-  store.saveDraft(created);
-  bus.emit({ type: "draft", draft: created });
-  bus.emit({ type: "assistant", assistant: router.summary(assistant) });
-  return { status: 200, body: { assistant: router.summary(assistant), routineReport } };
+  return { savedRoutines, createdRoutines, routineReport };
 }
 
 export function dismissDraft(runtime: HobRuntime, draftId: string): ActionResult {

@@ -7,6 +7,8 @@ import type {
   AboutInfo,
   AnswerApprovalBody,
   Assistant,
+  AssistantSummary,
+  CreateAssistantBody,
   Bootstrap,
   ClaudeCodeSettings,
   ClaudeCodeView,
@@ -25,6 +27,9 @@ import type {
   GroupProfile,
   GroupItem,
   GroupSummary,
+  GroupArtifact,
+  GroupArtifactMeta,
+  RewindResult,
   ImageKeyView,
   ImageSettings,
   ImageSettingsSaved,
@@ -39,6 +44,8 @@ import type {
   ModelsView,
   LoreImportView,
   LoreTestResult,
+  LocalMemoryView,
+  ExportedMarkdown,
   MemoryConfig,
   MemoryProvider,
   ModelThinkingPatch,
@@ -83,6 +90,12 @@ export class ApiError extends Error {
   }
 }
 
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -98,6 +111,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* 非 JSON 错误体，保留状态码 */
     }
+    if (res.status === 401 && path !== "/api/me" && path !== "/api/login" && path !== "/api/logout") {
+      onUnauthorized?.();
+    }
     throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
@@ -111,6 +127,7 @@ function json(body: unknown, method = "POST"): RequestInit {
 
 export interface EventHandlers {
   onEvent(ev: HobEvent): void;
+  onOpen?(): void;
   onReconnect(): void;
   onDown(reason: string): void;
 }
@@ -226,11 +243,19 @@ export interface HobApi {
   loreTest(body: { baseUrl?: string; token?: string }): Promise<LoreTestResult>;
   loreImport(): Promise<LoreImportView>;
   importLore(): Promise<MemoryConfig>;
+  memoryEntries(date?: string): Promise<LocalMemoryView>;
+  addMemoryEntry(body: { target: "long_term" | "scratchpad"; text: string }): Promise<LocalMemoryView>;
+  updateMemoryEntry(id: string, body: { target: "long_term" | "scratchpad"; text?: string; done?: boolean }): Promise<LocalMemoryView>;
+  deleteMemoryEntry(id: string, target: "long_term" | "scratchpad" | "daily", date?: string): Promise<LocalMemoryView>;
+  clearDoneScratchpad(): Promise<LocalMemoryView>;
   items(assistantId: string, before?: string): Promise<ItemsPage>;
+  exportAssistant(assistantId: string): Promise<ExportedMarkdown>;
   profile(assistantId: string): Promise<Profile>;
   sendMessage(assistantId: string, body: SendMessageBody): Promise<{ item: Item }>;
   stopAssistant(assistantId: string): Promise<void>;
+  rewindAssistant(assistantId: string, beforeItemId: string): Promise<RewindResult>;
   markRead(assistantId: string): Promise<void>;
+  createAssistant(body: CreateAssistantBody): Promise<{ assistant: AssistantSummary }>;
   patchAssistant(assistantId: string, patch: Partial<Assistant> & { rule?: { id?: string; text?: string; mode?: "ask" | "allow" } }): Promise<{ rule?: Rule } | void>;
   archiveAssistant(assistantId: string): Promise<void>;
   deleteRule(assistantId: string, ruleId: string): Promise<void>;
@@ -249,6 +274,10 @@ export interface HobApi {
   jobs(query?: { assistantId?: string; groupId?: string; status?: JobStatus; before?: string; limit?: number }): Promise<JobsPage>;
   upload(file: File, target: { assistantId?: string; groupId?: string }): Promise<string>;
   groupProfile(groupId: string): Promise<GroupProfile>;
+  groupArtifacts(groupId: string): Promise<{ artifacts: GroupArtifactMeta[] }>;
+  groupArtifact(groupId: string, name: string): Promise<{ artifact: GroupArtifact }>;
+  saveGroupArtifact(groupId: string, name: string, body: { title?: string; content: string; expectedVersion?: number }): Promise<{ artifact: GroupArtifact }>;
+  deleteGroupArtifact(groupId: string, name: string): Promise<void>;
   groupSkills(groupId: string): Promise<AssistantSkill[]>;
   patchGroupSkill(groupId: string, name: string, enabled: boolean): Promise<AssistantSkill>;
   rollbackGroupSkill(groupId: string, name: string): Promise<AssistantSkill>;
@@ -265,9 +294,12 @@ export interface HobApi {
   closeTopic(topicId: string, body?: { note?: string }): Promise<Group>;
   reopenTopic(topicId: string): Promise<Group>;
   groupItems(groupId: string, before?: string): Promise<GroupItemsPage>;
+  exportGroup(groupId: string): Promise<ExportedMarkdown>;
   sendGroupMessage(groupId: string, body: SendMessageBody): Promise<{ item: GroupItem }>;
   markGroupRead(groupId: string): Promise<void>;
   stopGroup(groupId: string): Promise<void>;
+  groupQueueAction(groupId: string, action: "resume" | "discard"): Promise<{ ok: true; applied: boolean }>;
+  rewindGroup(groupId: string, beforeItemId: string): Promise<RewindResult>;
   /** thumb：对话里显示的缩略图（长边 720），点开预览才拉原图 */
   fileUrl(path: string, opts?: { inline?: boolean; truncate?: boolean; thumb?: boolean }): string;
   fileMeta(path: string): Promise<FileMeta>;
@@ -281,6 +313,7 @@ export interface HobApi {
 }
 
 const EVENT_TYPES: HobEvent["type"][] = [
+  "desktop-screens",
   "rules",
   "assistant",
   "assistant_removed",
@@ -426,19 +459,34 @@ export const realApi: HobApi = {
   loreTest: (body) => req<LoreTestResult>("/api/memory/lore-test", json(body)),
   loreImport: () => req<LoreImportView>("/api/memory/lore/import"),
   importLore: () => req<MemoryConfig>("/api/memory/lore/import", { method: "POST" }),
+  memoryEntries: (date) =>
+    req<LocalMemoryView>(`/api/memory/entries${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  addMemoryEntry: (body) => req<LocalMemoryView>("/api/memory/entries", json(body)),
+  updateMemoryEntry: (id, body) =>
+    req<LocalMemoryView>(`/api/memory/entries/${encodeURIComponent(id)}`, json(body, "PUT")),
+  deleteMemoryEntry: (id, target, date) =>
+    req<LocalMemoryView>(
+      `/api/memory/entries/${encodeURIComponent(id)}?target=${encodeURIComponent(target)}${date ? `&date=${encodeURIComponent(date)}` : ""}`,
+      { method: "DELETE" },
+    ),
+  clearDoneScratchpad: () => req<LocalMemoryView>("/api/memory/scratchpad/clear-done", { method: "POST" }),
   items: (assistantId, before) =>
     req<ItemsPage>(
       `/api/assistants/${encodeURIComponent(assistantId)}/items?limit=60${
         before ? `&before=${encodeURIComponent(before)}` : ""
       }`,
     ),
+  exportAssistant: (assistantId) =>
+    req<ExportedMarkdown>(`/api/assistants/${encodeURIComponent(assistantId)}/export`),
   profile: (assistantId) => req<Profile>(`/api/assistants/${encodeURIComponent(assistantId)}/profile`),
   sendMessage: (assistantId, body) =>
     req<{ item: Item }>(`/api/assistants/${encodeURIComponent(assistantId)}/messages`, json(body)),
   stopAssistant: (assistantId) =>
     req<void>(`/api/assistants/${encodeURIComponent(assistantId)}/stop`, { method: "POST" }),
+  rewindAssistant: (id, beforeItemId) => req<RewindResult>(`/api/assistants/${encodeURIComponent(id)}/rewind`, json({ beforeItemId })),
   markRead: (assistantId) =>
     req<void>(`/api/assistants/${encodeURIComponent(assistantId)}/read`, { method: "POST" }),
+  createAssistant: (body) => req<{ assistant: AssistantSummary }>("/api/assistants", json(body)),
   patchAssistant: (assistantId, patch) =>
     req<{ rule?: Rule }>(`/api/assistants/${encodeURIComponent(assistantId)}`, {
       method: "PATCH",
@@ -493,6 +541,10 @@ export const realApi: HobApi = {
     return out.file.path;
   },
   groupProfile: (id) => req<GroupProfile>(`/api/groups/${encodeURIComponent(id)}/profile`),
+  groupArtifacts: (id) => req(`/api/groups/${encodeURIComponent(id)}/artifacts`),
+  groupArtifact: (id, name) => req(`/api/groups/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(name)}`),
+  saveGroupArtifact: (id, name, body) => req(`/api/groups/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(name)}`, json(body, "PUT")),
+  deleteGroupArtifact: async (id, name) => { await req(`/api/groups/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(name)}`, { method: "DELETE" }); },
   groupSkills: (id) => req<AssistantSkill[]>(`/api/groups/${encodeURIComponent(id)}/skills`),
   patchGroupSkill: (id, name, enabled) => req<AssistantSkill>(`/api/groups/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`, json({ enabled }, "PATCH")),
   rollbackGroupSkill: (id, name) => req<AssistantSkill>(`/api/groups/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}/rollback`, { method: "POST" }),
@@ -510,10 +562,13 @@ export const realApi: HobApi = {
     req<GroupItemsPage>(
       `/api/groups/${encodeURIComponent(groupId)}/items?limit=60${before ? `&before=${encodeURIComponent(before)}` : ""}`,
     ),
+  exportGroup: (groupId) => req<ExportedMarkdown>(`/api/groups/${encodeURIComponent(groupId)}/export`),
   sendGroupMessage: (groupId, body) =>
     req<{ item: GroupItem }>(`/api/groups/${encodeURIComponent(groupId)}/messages`, json(body)),
   markGroupRead: (groupId) => req<void>(`/api/groups/${encodeURIComponent(groupId)}/read`, { method: "POST" }),
   stopGroup: (groupId) => req<void>(`/api/groups/${encodeURIComponent(groupId)}/stop`, { method: "POST" }),
+  groupQueueAction: (groupId, action) => req<{ ok: true; applied: boolean }>(`/api/groups/${encodeURIComponent(groupId)}/queue`, json({ action })),
+  rewindGroup: (id, beforeItemId) => req<RewindResult>(`/api/groups/${encodeURIComponent(id)}/rewind`, json({ beforeItemId })),
   fileUrl: (path, opts) =>
     `/api/files?path=${encodeURIComponent(path)}${opts?.inline ? "&inline=1" : ""}${opts?.truncate ? "&truncate=1" : ""}${opts?.thumb ? "&thumb=1" : ""}`,
   fileMeta: (path) => req<FileMeta>(`/api/files/meta?path=${encodeURIComponent(path)}`),
@@ -531,7 +586,7 @@ export const realApi: HobApi = {
   testPush: (endpoint) =>
     req<{ sent: number; removed: number; error?: string }>("/api/push/test", json(endpoint ? { endpoint } : {})),
   visibility: (clientId, visible) => req<void>("/api/visibility", json({ clientId, visible })),
-  events: ({ onEvent, onReconnect, onDown }, clientId) => {
+  events: ({ onEvent, onOpen, onReconnect, onDown }, clientId) => {
     const es = new EventSource(`/api/events${clientId ? `?clientId=${encodeURIComponent(clientId)}` : ""}`);
     let wasDown = false;
     const handle = (e: MessageEvent) => {
@@ -548,6 +603,7 @@ export const realApi: HobApi = {
       onDown(es.readyState === EventSource.CLOSED ? t("实时连接已断开") : t("实时连接中断，正在重连"));
     };
     es.onopen = () => {
+      onOpen?.();
       if (wasDown) {
         wasDown = false;
         onReconnect();

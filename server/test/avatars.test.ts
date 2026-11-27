@@ -11,6 +11,7 @@ import {
   spriteId,
   validateCustomProp,
 } from "../../shared/sprites.ts";
+import { PET_COLOR_IDS, PET_SHAPE_IDS, PET_SHAPES, distinctPetSprite, parsePetDirect, petSpriteId, resolvePet } from "../../shared/pet.ts";
 import type { Assistant, Draft } from "../../shared/types.ts";
 import { createFromDraft } from "../src/actions.ts";
 import { createApp } from "../src/http.ts";
@@ -324,7 +325,7 @@ describe("set_avatar 工具", () => {
       expect(sprites).toContain("wifi:green");
       const bad = await run(hob, "hob", "set_avatar", { sprite: "nope" });
       expect(bad.isError).toBe(true);
-      expect(bad.text).toContain("sprite 要是内置道具 id");
+      expect(bad.text).toContain("sprite 要是宠物造型 id");
     } finally {
       hob.close();
     }
@@ -396,6 +397,58 @@ describe("set_avatar 工具", () => {
       await hob.runtime.router.waitIdle("hob");
       expect(hob.runtime.store.drafts().find((item) => item.name === "错了")).toBeUndefined();
       expect(hob.runtime.store.assistants().find((item) => item.name === "错了")).toBeUndefined();
+    } finally {
+      hob.close();
+    }
+  });
+
+  it("GrokBot 极简宠物造型：20 造型/11 色/#rrggbb 校验、旧 ID 映射与 set_avatar / PATCH 端到端", async () => {
+    expect(PET_SHAPE_IDS).toHaveLength(20);
+    expect(PET_COLOR_IDS).toHaveLength(11);
+    for (const shape of PET_SHAPE_IDS) {
+      expect(PET_SHAPES[shape].ring).toHaveLength(48);
+      expect(PET_SHAPES[shape].pathD.startsWith("M")).toBe(true);
+    }
+    // 主助手 hob 默认映射为经典纯黑圆球
+    expect(resolvePet("hob")).toMatchObject({ shape: "sphere", color: "black", body: "#09090b", isDarkBody: true });
+    expect(resolvePet("wifi:green")).toMatchObject({ shape: "sparkle", color: "green" });
+    expect(resolvePet("paw")).toMatchObject({ shape: "cat", color: "purple" });
+    expect(parsePetDirect("heart:#ff2d8b")).toEqual({ shape: "heart", color: "#ff2d8b" });
+    expect(petSpriteId("cat", "purple")).toBe("cat");
+    expect(petSpriteId("cat", "pink")).toBe("cat:pink");
+    expect(distinctPetSprite("cat", ["cat"])).toBe("cat:cocoa");
+
+    const hob = makeHob();
+    try {
+      const ok1 = await run(hob, "hob", "set_avatar", { sprite: "cat", color: "pink" });
+      expect(ok1.isError).toBe(false);
+      expect(hob.runtime.store.assistant("hob")!.sprite).toBe("cat:pink");
+
+      const ok2 = await run(hob, "hob", "set_avatar", { sprite: "heart", color: "#ff2d8b" });
+      expect(ok2.isError).toBe(false);
+      expect(hob.runtime.store.assistant("hob")!.sprite).toBe("heart:#ff2d8b");
+
+      const app = createApp(hob.runtime, { home: hob.home });
+      const login = await app.request("/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "test" }),
+      });
+      const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+      const patched = await app.request("/api/assistants/hob", {
+        method: "PATCH",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ sprite: "ghost:#112233" }),
+      });
+      expect(patched.status).toBe(200);
+      expect(hob.runtime.store.assistant("hob")!.sprite).toBe("ghost:#112233");
+
+      const rejected = await app.request("/api/assistants/hob", {
+        method: "PATCH",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ sprite: "ghost:notacolor" }),
+      });
+      expect(rejected.status).toBe(400);
     } finally {
       hob.close();
     }

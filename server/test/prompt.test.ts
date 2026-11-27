@@ -25,7 +25,9 @@ describe("群补充说明", () => {
     const settings = { timezone: "Asia/Shanghai", aboutYou: { name: "", language: "", notes: "" }, memory: "off" as const, searchEnabled: false, imageEnabled: false, desktopEnabled: false };
     const sentence = "成员的任务分派给成员：start_job 填它的 assistantId，任务就以它的身份、用它的技能执行。需要核对的，分派给没参与这项任务的成员，核对的人没写过，才看得出执行者自己看不到的地方。";
     expect(GROUP_OWNER_LINE).toContain(sentence);
+    expect(GROUP_OWNER_LINE).toContain("直接在你的回复里 @ 成员名字即可");
     expect(buildSystemPrompt(store, "hob", { ...settings, group })).toContain(sentence);
+    expect(buildSystemPrompt(store, "hob", { ...settings, group })).toContain("平台会自动轮到他以自己的身份在群里发言");
     // 群里的其他成员不管派活，也不在单聊里出现
     expect(buildSystemPrompt(store, "ops", { ...settings, group })).not.toContain(sentence);
     expect(buildSystemPrompt(store, "hob", settings)).not.toContain(sentence);
@@ -488,6 +490,63 @@ describe("技能按谁能用分档（票 197）", () => {
       expect(prompt).toContain("在这个群里做成的事，沉淀进本群的技能；对所有助手都用得上、和这个群管的事无关的，存成通用的。");
       expect(prompt).toContain("只对这个群的事成立的做法，另存成本群的。");
       expect(prompt).not.toContain("任务带上的通用技能");
+    } finally { hob.close(); }
+  });
+});
+
+describe("群聊与通用系统提示词修复回归", () => {
+  const base = { timezone: "Asia/Shanghai", aboutYou: { name: "", language: "", notes: "" }, memory: "off" as const };
+
+  it("全员回应模式下群主提示词避免重复点名，且群主仍包含定时检查脚本说明与共享待办提示", () => {
+    const hob = makeHob({}, { memory: "off" });
+    try {
+      const group = hob.runtime.groups.create({ name: "圆桌讨论", purpose: "头脑风暴", ownerId: "hob", members: ["hob", "hacker"], replyMode: "all" });
+      const ownerPrompt = buildSystemPrompt(hob.runtime.store, "hob", { ...base, group });
+      expect(ownerPrompt).toContain("在全员回应模式下，系统已经会自动依次轮到每位成员");
+      expect(ownerPrompt).toContain("定时任务到执行时间会交给你处理，每次都花一次模型调用。只是查看有没有新情况");
+      expect(ownerPrompt).toContain("在这个群或话题里，所有成员共用同一份待办");
+      expect(ownerPrompt).not.toContain("\n\n\n");
+    } finally { hob.close(); }
+  });
+
+  it("委派话题的群主系统提示词包含交回提醒", () => {
+    const hob = makeHob({}, { memory: "off" });
+    try {
+      const group = hob.runtime.groups.create({ name: "运维群", purpose: "机器运维", ownerId: "hacker", members: ["hob", "hacker"] });
+      const { topic } = hob.runtime.groups.handOver(group.id, "核查日志", "hob", { text: "请核查日志", files: [] });
+      const ownerPrompt = buildSystemPrompt(hob.runtime.store, "hacker", { ...base, group: topic });
+      expect(ownerPrompt).toContain("这个话题是「Hob」交给这个群处理的");
+      expect(ownerPrompt).toContain("完成后务必带结论调用 close_topic");
+    } finally { hob.close(); }
+  });
+
+  it("单聊提示词的「助手」一节过滤掉 hidden 助手，不暴露收起的群专属成员", () => {
+    const hob = makeHob({}, { memory: "off" });
+    try {
+      const prompt = buildSystemPrompt(hob.runtime.store, "hob", base);
+      const section = prompt.slice(prompt.indexOf("## 助手"), prompt.indexOf("## 群"));
+      expect(section).toContain("Hacker（hacker）");
+      expect(section).not.toContain("（po）");
+      expect(section).not.toContain("（dev）");
+    } finally { hob.close(); }
+  });
+
+  it("buildWorkerPrompt 同时包含助手自己的直接执行（allow）与执行前确认（ask）规则", () => {
+    const hob = makeHob({}, { memory: "off" });
+    try {
+      hob.runtime.store.saveRules("hob", [
+        { id: "r-allow", mode: "allow", text: "直接运行测试脚本" },
+        { id: "r-ask", mode: "ask", text: "删除生产数据" },
+      ]);
+      hob.runtime.store.saveJob({
+        id: "t-rules", assistantId: "hob", title: "跑测试", instruction: "", status: "running",
+        createdAt: new Date().toISOString(), stats: { reads: 0, commands: 0, edits: 0 }, activity: [],
+      });
+      const workerPrompt = buildWorkerPrompt(hob.runtime.store, "t-rules", base);
+      const allowSection = workerPrompt.slice(workerPrompt.indexOf("## 用户定的规则"), workerPrompt.indexOf("## 这些事执行前先用 ask_user 确认"));
+      const askSection = workerPrompt.slice(workerPrompt.indexOf("## 这些事执行前先用 ask_user 确认"));
+      expect(allowSection).toContain("- 直接运行测试脚本");
+      expect(askSection).toContain("- 删除生产数据");
     } finally { hob.close(); }
   });
 });

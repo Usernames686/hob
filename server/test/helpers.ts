@@ -1,4 +1,6 @@
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import type { AddressInfo, Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type ThinkingLevelMap } from "@earendil-works/pi-ai";
@@ -18,6 +20,11 @@ export function seedPluginSource(home: string): void {
   for (const path of ["index.json", "github", "gmail", "email"]) cpSync(new URL(path, source), join(destination, path), { recursive: true });
   mkdirSync(join(home, "system"), { recursive: true });
   writeFileSync(join(home, "system/plugin-sources.json"), JSON.stringify([{ id: "official", url: "https://github.com/FFatTiger/hob-plugins", name: "Hob 官方", updatedAt: new Date().toISOString() }]));
+}
+
+export async function listenHttp(server: Server): Promise<string> {
+  await once(server.listen(0, "127.0.0.1"), "listening");
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
 export interface TestHob {
@@ -64,7 +71,7 @@ export function loreHome(): string {
 
 /** 假模型 + 临时 HOB_HOME 的一整套服务，测试不碰真实模型。 */
 export function makeHob(overrides: Partial<HobConfig> = {}, options: MakeHobOptions = {}): TestHob {
-  const home = mkdtempSync(join(tmpdir(), "hob-test-"));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "hob-test-")));
   // 和启动入口一样：引擎、本地记忆、Lore 的目录都指到这个临时目录，
   // 进程里继承的 LORE_* 也删掉（那台机器上可能已经配好了 Lore）
   applyEngineEnv(process.env, home);
@@ -120,6 +127,7 @@ export function makeHob(overrides: Partial<HobConfig> = {}, options: MakeHobOpti
   });
   const runtime = createRuntime({
     home,
+    userHome: join(home, "user-home"),
     config,
     pi,
     ...(options.pushSender ? { pushSender: options.pushSender } : {}),
@@ -150,10 +158,10 @@ export function call(name: string, args: Record<string, unknown>) {
   return fauxAssistantMessage([fauxToolCall(name, handoff)], { stopReason: "toolUse" });
 }
 
-export async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+export async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("等到超时");

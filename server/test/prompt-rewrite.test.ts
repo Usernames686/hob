@@ -81,7 +81,7 @@ describe("工具说明和确认选项", () => {
     try {
       const tool = buildRouterTools(hob.runtime, "hob").find((item) => item.name === "create_assistant")!;
       const result = await tool.execute("p", { name: "助手", duty: "工作", dutyLong: "做事", sprite: "hob" });
-      expect(result).toMatchObject({ isError: true, content: [{ text: "hob 火苗是主助手专用的。" }] });
+      expect(result).toMatchObject({ isError: true, content: [{ text: "hob 是主助手专用的。" }] });
       expect(hob.runtime.store.drafts()).toHaveLength(0);
     } finally { hob.close(); }
   });

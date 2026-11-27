@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } fro
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { createServer } from 'node:net';
 import { SMTPServer } from 'smtp-server';
 import { simpleParser } from 'mailparser';
@@ -141,17 +141,15 @@ describe('email service', () => {
     mkdirSync(join(packageDir, 'server', 'mcp'), { recursive: true });
     cpSync(new URL('../mcp/email.mjs', import.meta.url), join(packageDir, 'server', 'mcp', 'email.mjs'));
     symlinkSync(join(process.cwd(), 'node_modules'), join(packageDir, 'node_modules'), 'dir');
-    const child = spawn(process.execPath, [join(packageDir, 'server/mcp/email.mjs')], { cwd: home(), env: { ...process.env, EMAIL_ADDRESS: 'invalid' }, stdio: ['pipe', 'pipe', 'pipe'] });
-    const output = new Promise<string>((resolve, reject) => {
-      let text = '';
-      child.stdout.on('data', chunk => { text += chunk; if (text.includes('\n')) resolve(text); });
-      child.once('error', reject);
-      child.once('exit', code => reject(new Error(`server exited ${code}`)));
-    });
-    try {
-      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
-      expect(JSON.parse((await output).trim()).error.message).toContain('邮箱地址的域名无效');
-    } finally { child.stdin.end(); await new Promise<void>(resolve => child.once('exit', () => resolve())); }
+    const linkedPackage = join(home(), 'linked-package');
+    symlinkSync(packageDir, linkedPackage, 'dir');
+    const child = spawn(process.execPath, [join(linkedPackage, 'server/mcp/email.mjs')], { cwd: home(), env: { ...process.env, EMAIL_ADDRESS: 'invalid' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let output = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { output += chunk; });
+    child.stdin.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
+    expect((await closed)[0]).toBe(0);
+    expect(JSON.parse(output.trim()).error.message).toContain('邮箱地址的域名无效');
   });
   it('installs the service and reports missing server settings', async () => {
     const h = home(), host = new PluginHost(h);

@@ -1,12 +1,12 @@
 import { pluginToolsForAssistant } from "./plugin-host.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseStreamingJson } from "@earendil-works/pi-ai/utils/json-parse";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { newId } from "./ids.ts";
 import type { AgentSession, AgentSessionEvent, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
-import { SessionManager as SessionManagerImpl } from "@earendil-works/pi-coding-agent";
+import { resizeImage, SessionManager as SessionManagerImpl } from "@earendil-works/pi-coding-agent";
 import { t } from "../../shared/i18n.ts";
 import { readTodos, releaseIdleTodos, todosBusy } from "./todos.ts";
 import { assistantTodosPath, assistantWorkDir } from "./config.ts";
@@ -27,6 +27,7 @@ import type {
   Profile,
   SendMessageBody,
   RouterActivity,
+  RewindResult,
 } from "../../shared/types.ts";
 import type { HobRuntime } from "./runtime.ts";
 import { refreshSystemPrompt } from "./pi.ts";
@@ -51,6 +52,7 @@ import { briefModelError } from "./text.ts";
 import { saysNoReply, stripNoReply } from "../../shared/no-reply.ts";
 import { reactionsList } from "./store.ts";
 import { generateFollowUpSuggestions, groupHistory, routerHistory } from "./follow-up.ts";
+import { keepSessionEntries, readSessionFile, writeRewindFiles } from "./rewind.ts";
 
 export const IDLE_COMPACTION_IDLE_MS = 6 * 60 * 60 * 1000;
 export const IDLE_COMPACTION_TOKEN_THRESHOLD = 150_000;
@@ -73,6 +75,7 @@ export interface EventDetails {
   cont?: true;
   returnedDelegationId?: string;
   delegationId?: string;
+  files?: string[];
   /** 主助手交来的话题关了：送结论的会话条目按这个 id 去重 */
   handoverTopicId?: string;
   /** 任务事件按真正投递时的任务状态改写；同一任务排队时只留最新一条 */
@@ -91,13 +94,26 @@ interface PendingEvent {
 
 export type NewItem = Item extends infer T ? (T extends Item ? Omit<T, "id" | "at"> : never) : never;
 
+/** 自定义消息不会经过普通用户输入的图片缩放。无法内联的文件仍以路径交给接手助手。 */
+async function eventContent(text: string, files: string[] | undefined, model: AgentSession["model"]) {
+  if (!files?.length) return text;
+  const prompt = `${text}\n附件：${files.join("、")}`;
+  if (!model?.input.includes("image")) return prompt;
+  const images = [];
+  for (const file of imageContents(files)) {
+    const image = await resizeImage(Buffer.from(file.data, "base64"), file.mimeType, model.inputLimits?.images?.resize).catch(() => null);
+    if (image) images.push({ type: "image" as const, data: image.data, mimeType: image.mimeType });
+  }
+  return images.length ? [{ type: "text" as const, text: prompt }, ...images] : prompt;
+}
+
 /**
  * 群里给做事、沟通和管理本群规则、定时、技能的工具；页面按助手存，进群要另做。
  */
 const GROUP_TOOL_NAMES = new Set([
   "read", "bash", "edit", "write", "search_history", "search_plugins", "check_job", "start_job", "reply_job", "stop_job", "ask_user", "send_card", "send_file", "react", "save_skill", "review_job", "set_rule", "remove_rule", "create_routine", "update_routine", "delete_routine", "delete_skill", "update_todos",
   "find_knowledge", "search_knowledge", "web_search", "web_fetch", "generate_image", "login", "fill_new_password",
-  "open_topic", "close_topic",
+  "open_topic", "close_topic", "call_members", "write_artifact", "read_artifact",
 ]);
 
 /**
@@ -108,8 +124,11 @@ const GROUP_PRIMARY_TOOL_NAMES = new Set([
   "show_assistant", "show_group", "create_assistant", "update_assistant", "create_group", "update_group", "manage_topic",
 ]);
 
-function groupTool(name: string, primary: boolean): boolean {
-  return GROUP_TOOL_NAMES.has(name) || (primary && GROUP_PRIMARY_TOOL_NAMES.has(name)) ||
+/** 群里另外给群主的只读工具：非主助手当群主时也需要查本群历史话题。 */
+const GROUP_OWNER_TOOL_NAMES = new Set(["show_group"]);
+
+function groupTool(name: string, primary: boolean, groupOwner = false): boolean {
+  return GROUP_TOOL_NAMES.has(name) || (primary && GROUP_PRIMARY_TOOL_NAMES.has(name)) || (groupOwner && GROUP_OWNER_TOOL_NAMES.has(name)) ||
     Object.values(MEMORY_TOOL_PATTERNS).flat().some((pattern) => pattern.endsWith("*") ? name.startsWith(pattern.slice(0, -1)) : name === pattern);
 }
 
@@ -186,21 +205,6 @@ interface RouterState {
   callSubjects?: Map<string, string>;
   /** 这一轮有副作用、还没办成的调用：对象 → 提示行要写的名字和原因 */
   turnCalls?: Map<string, { label: string; error: string }>;
-}
-
-function readEntries(file: string): SessionEntry[] {
-  if (!existsSync(file)) return [];
-  const out: SessionEntry[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as { type?: string };
-      if (entry.type && entry.type !== "session") out.push(entry as SessionEntry);
-    } catch {
-      // 半行忽略
-    }
-  }
-  return out;
 }
 
 /**
@@ -283,17 +287,18 @@ function silentEventTexts(entries: SessionEntry[]): Set<number> {
  * 事件之后的第一条标 lead（新一轮回复，前端拉开间距）；事件带 cont 表示任务的图片已经先开了这一组，回复接着图片走。
  * 返回值里的 lead 是“下一条该不该标”，实时推送的条目用它，和刷新后推导的一致。
  */
-function walk(entries: SessionEntry[]): { items: Item[]; lead: boolean } {
+function walk(entries: SessionEntry[], sources?: Map<string, number>): { items: Item[]; lead: boolean } {
   const items: Item[] = [];
   const silent = silentEventTexts(entries);
   let assistantIndex = 0;
   let routine: EventDetails["routine"];
   let lead = false;
-  const push = (item: Item) => {
+  const push = (item: Item, index: number) => {
     items.push(lead ? { ...item, lead: true } : item);
+    sources?.set(item.id, index);
     lead = false;
   };
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     if (entry.type === "custom" && entry.customType === USER_TYPE) {
       const data = (entry.data ?? {}) as { text?: string; quote?: { itemId: string; text: string }; files?: string[]; from?: { assistantId: string; name: string; delegationId: string } };
       items.push({
@@ -305,13 +310,14 @@ function walk(entries: SessionEntry[]): { items: Item[]; lead: boolean } {
         ...(data.files?.length ? { files: data.files } : {}),
         ...(data.from ? { from: data.from } : {}),
       });
+      sources?.set(entry.id, index);
       lead = false;
       continue;
     }
     if (entry.type === "custom" && entry.customType === ITEM_TYPE) {
       // 旧版本把别的助手的审批转述进主助手的对话（relay）；现在审批只在提问的助手那里，历史里的转述卡不再显示
       if ((entry.data as { kind?: string; relay?: boolean } | undefined)?.relay) continue;
-      push({ ...(entry.data as object), id: entry.id, at: entry.timestamp } as Item);
+      push({ ...(entry.data as object), id: entry.id, at: entry.timestamp } as Item, index);
       continue;
     }
     if (entry.type === "custom" && entry.customType === ITEM_UPDATE_TYPE) {
@@ -343,7 +349,7 @@ function walk(entries: SessionEntry[]): { items: Item[]; lead: boolean } {
         at: entry.timestamp,
         text,
         ...(routine ? { routine } : {}),
-      });
+      }, index);
       routine = undefined;
     }
   }
@@ -357,6 +363,7 @@ export function deriveItems(entries: SessionEntry[]): Item[] {
 export class RouterManager {
   private routers = new Map<string, RouterState>();
   private itemCache = new Map<string, { manager?: SessionManager; version: string; result: ReturnType<typeof walk>; positions: Map<string, number>; assistantTimes: string[]; last?: { text: string; at: Iso } }>();
+  private rewinding = new Map<string, Promise<RewindResult | undefined>>();
   private livePages = new Map<string, Map<string, { page: PageLive; timer?: NodeJS.Timeout; last: number }>>();
   private liveJson = new Map<string, string>();
   private idleCompactionTimer?: NodeJS.Timeout;
@@ -401,7 +408,7 @@ export class RouterManager {
     for (const assistant of runtime.store.assistants()) {
       const file = runtime.store.routerFile(assistant.id);
       if (!existsSync(file)) continue;
-      const pending = deriveItems(readEntries(file)).filter((item) => item.kind === "image" && item.status === "pending");
+      const pending = deriveItems(readSessionFile(file).entries).filter((item) => item.kind === "image" && item.status === "pending");
       if (!pending.length) continue;
       const manager = SessionManagerImpl.open(file, dirname(file), runtime.home);
       for (const item of pending) manager.appendCustomEntry(ITEM_UPDATE_TYPE, { id: item.id, status: "failed", error: "生成被中断" });
@@ -426,10 +433,10 @@ export class RouterManager {
     return assistant;
   }
 
-  private entries(assistantId: string): SessionEntry[] {
+  entries(assistantId: string): SessionEntry[] {
     const state = this.routers.get(assistantId);
     if (state?.manager) return state.manager.getEntries();
-    return readEntries(this.store.routerFile(assistantId));
+    return readSessionFile(this.store.routerFile(assistantId)).entries;
   }
 
   private derived(assistantId: string) {
@@ -448,7 +455,7 @@ export class RouterManager {
     }
     const cached = this.itemCache.get(assistantId);
     if (cached && cached.manager === manager && cached.version === version) return cached;
-    const result = walk(manager ? manager.getEntries() : readEntries(file));
+    const result = walk(manager ? manager.getEntries() : readSessionFile(file).entries);
     const positions = new Map<string, number>();
     const assistantTimes: string[] = [];
     let last: { text: string; at: Iso } | undefined;
@@ -536,12 +543,14 @@ export class RouterManager {
       onCardError: (pluginId, message) => this.addPluginCardError(assistant.id, state.groupId, message),
     });
     const availableToolNames = [...new Set([...directToolNames, ...customTools.map((tool) => tool.name)])];
-    const allowedTools = state.groupId ? availableToolNames.filter((name) => groupTool(name, assistant.primary)) : availableToolNames;
+    const isGroupOwner = Boolean(state.groupId && this.store.group(state.groupId)?.ownerId === assistant.id);
+    const allowedTools = state.groupId ? availableToolNames.filter((name) => groupTool(name, assistant.primary, isGroupOwner)) : availableToolNames;
     const tools = [...customTools.filter((tool) => allowedTools.includes(tool.name)), ...pluginTools];
     allowedTools.push(...pluginTools.map(tool => tool.name));
     const toolSearch = pluginTools.some(tool => tool.exposure === "deferred");
     if (toolSearch) allowedTools.push("tool_search");
     await this.runtime.scriptTools.start();
+    if (this.routers.get(state.key) !== state) throw new Error("会话已关闭");
     const file = this.sessionFile(state);
     const groupId = state.groupId;
     const opened = await this.runtime.pi.open({
@@ -600,6 +609,10 @@ export class RouterManager {
         return { command, cwd, env: this.runtime.scriptTools.environment(proxyEnvironment(browserShellEnv(env, cliEnvironment), this.runtime.settings.settings.general), credential.token) };
       },
     });
+    if (this.routers.get(state.key) !== state) {
+      opened.session.dispose();
+      throw new Error("会话已关闭");
+    }
     state.toolLabels = new Map(tools.map((tool) => [tool.name, tool.label]));
     state.session = opened.session;
     if (!state.knowledgeNames.length) refreshSystemPrompt(opened.session, opened.session.getActiveToolNames().filter((name) => name !== "search_knowledge"));
@@ -614,7 +627,8 @@ export class RouterManager {
   private async refreshTools(state: RouterState): Promise<void> {
     state.knowledgeNames = (await boundKnowledge(this.runtime, state.assistantId)).map((collection) => collection.name);
     const primary = this.store.assistant(state.assistantId)?.primary === true;
-    const names = state.session!.getActiveToolNames().filter((name) => name !== "search_knowledge" && (!state.groupId || name === "tool_search" || state.toolLabels?.has(name) || groupTool(name, primary)));
+    const isGroupOwner = Boolean(state.groupId && this.store.group(state.groupId)?.ownerId === state.assistantId);
+    const names = state.session!.getActiveToolNames().filter((name) => name !== "search_knowledge" && (!state.groupId || name === "tool_search" || state.toolLabels?.has(name) || groupTool(name, primary, isGroupOwner)));
     if (state.knowledgeNames.length) names.push("search_knowledge");
     refreshSystemPrompt(state.session!, names);
   }
@@ -681,6 +695,7 @@ export class RouterManager {
    * 这样前端拿到的 id、时间、内容和 GET /items 推导出来的一样。
    */
   private onSessionEvent(state: RouterState, assistantId: string, event: AgentSessionEvent): void {
+    if (this.routers.get(state.key) !== state) return;
     if (event.type === "message_end" && event.message.role === "assistant") {
       // 这一次调模型没成（重试成功的话下一条会把这个清掉）
       const message = event.message;
@@ -738,11 +753,13 @@ export class RouterManager {
       this.flushEventTurn(state, assistantId);
       if (!state.groupId) state.eventTurn = { held: [] };
       const details = event.message.details as EventDetails | undefined;
-      state.turnDelegation ||= Boolean(details?.delegationId);
+      // 群可能在目标助手还忙时就交回结论。等消息实际入会话才重新打开原委派。
+      const delegationId = details?.handoverTopicId ? this.runtime.delegations.resumeForTopic(details.handoverTopicId) : details?.delegationId;
+      state.turnDelegation ||= Boolean(delegationId);
       state.turnWorkDone ||= Boolean(details?.workDone);
       state.turnRoutine = details?.routineTrigger;
-      if (details?.delegationId && details.delegationId !== state.currentDelegationId) {
-        state.currentDelegationId = details.delegationId;
+      if (delegationId && delegationId !== state.currentDelegationId) {
+        state.currentDelegationId = delegationId;
         state.delegationReply = [];
         state.terminatingTools = new Set();
       }
@@ -1160,6 +1177,14 @@ export class RouterManager {
     return group;
   }
 
+  /** SDK 只在文件已存在时立即落盘自定义条目，否则会等到模型首次回复。 */
+  private prepareTimelineFile(assistantId: string): string {
+    const file = this.store.routerFile(assistantId);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "", { flag: "a" });
+    return file;
+  }
+
   /**
    * 卡片进对话：在群里就进群的时间线（speaker 是这个助手），否则照旧进单聊。
    * 群已归档、成员已被移出时落回单聊，前端照常能看到，东西不丢。
@@ -1170,10 +1195,18 @@ export class RouterManager {
     if (group) {
       full = this.runtime.groups.appendItem(group.id, assistantId, item);
     } else {
-      const state = await this.ensure(assistantId);
+      let manager: SessionManager | undefined;
+      if (!this.routers.get(assistantId)?.manager) {
+        const assistant = this.assistant(assistantId);
+        const file = this.prepareTimelineFile(assistantId);
+        if (await this.modelGap(assistantId)) {
+          manager = SessionManagerImpl.open(file, dirname(file), assistant.cwd ?? assistantWorkDir(this.runtime.home, assistantId));
+        }
+      }
+      manager ??= (await this.ensure(assistantId)).manager!;
       const lead = this.derived(assistantId).result.lead;
-      const id = state.manager!.appendCustomEntry(ITEM_TYPE, item);
-      full = { ...item, ...(lead ? { lead: true } : {}), id, at: this.entryAt(state, id) } as Item;
+      const id = manager.appendCustomEntry(ITEM_TYPE, item);
+      full = { ...item, ...(lead ? { lead: true } : {}), id, at: manager.getEntry(id)!.timestamp } as Item;
       this.bus.emit({ type: "item", assistantId, item: full });
     }
     if (full.kind === "file") {
@@ -1304,7 +1337,9 @@ export class RouterManager {
     details: EventDetails | undefined,
     knowledgeQuery?: string,
   ): Promise<boolean> {
+    while (this.rewinding.has(assistantId)) await this.rewinding.get(assistantId);
     const state = await this.ensure(assistantId);
+    if (this.rewinding.has(assistantId) || this.routers.get(state.key) !== state) return false;
     return await new Promise<boolean>((resolve) => {
       const jobId = details?.job?.id;
       const existing = jobId ? state.pendingEvents?.find((event) => event.jobId === jobId) : undefined;
@@ -1367,9 +1402,12 @@ export class RouterManager {
       this.publishBusy(state);
       await this.waitForCompaction(state);
       const knowledge = knowledgeQuery === undefined ? "" : await this.automaticKnowledge(state, knowledgeQuery);
-      const message = { customType: EVENT_TYPE, content: `${nowBlock(this.runtime, assistantId)}\n\n[hob-event] ${this.eventText(text, details)}${knowledge}`, display: false, details };
       await this.refreshTools(state);
       await this.applyConversationModel(state);
+      const prompt = `${nowBlock(this.runtime, assistantId)}\n\n[hob-event] ${this.eventText(text, details)}${knowledge}`;
+      const content = await eventContent(prompt, details?.files, session.model);
+      const message = { customType: EVENT_TYPE, content, display: false, details };
+      if (this.routers.get(state.key) !== state || this.rewinding.has(assistantId)) return false;
       if (session.isStreaming) {
         // 上面几步等待的空当里用户的话先开了一轮：排在它后面，不插进那一轮中间
         await session.sendCustomMessage(message, { deliverAs: "followUp" });
@@ -1393,26 +1431,27 @@ export class RouterManager {
       this.touch(state);
     }
   }
-  async delegationResult(assistantId: string, id: string, text: string): Promise<boolean> {
+  async delegationResult(assistantId: string, id: string, text: string, files?: string[]): Promise<boolean> {
     const state = await this.ensure(assistantId);
     const received = () => state.manager!.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === EVENT_TYPE && (entry.details as EventDetails | undefined)?.returnedDelegationId === id);
     if (received()) return true;
-    const success = await this.pushEvent(assistantId, text, { returnedDelegationId: id, workDone: true });
+    const success = await this.pushEvent(assistantId, text, { returnedDelegationId: id, workDone: true, ...(files?.length ? { files } : {}) });
     return success && received();
   }
 
   /** 将主助手交来的话题的结论送进它的对话；会话条目是去重依据。 */
-  async handoverResult(assistantId: string, topicId: string, text: string): Promise<boolean> {
+  async handoverResult(assistantId: string, topicId: string, text: string, files?: string[]): Promise<boolean> {
     const state = await this.ensure(assistantId);
     const received = () => state.manager!.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === EVENT_TYPE && (entry.details as EventDetails | undefined)?.handoverTopicId === topicId);
     if (received()) return true;
-    const success = await this.pushEvent(assistantId, text, { handoverTopicId: topicId, workDone: true });
-    return success && received();
+    await this.pushEvent(assistantId, text, { handoverTopicId: topicId, workDone: true, ...(files?.length ? { files } : {}) });
+    // 只要事件条目已持久化进目标会话即视为送达：即使接手助手本轮调模型失败，也应收敛原委派，避免卡在 running。
+    return received();
   }
 
   /** 这一轮的状态由调用方在真正收尾时判断；任务、转交和提问仍在时不发完成通知 */
   private finishTurn(state: RouterState): void {
-    if (state.running > 0) return;
+    if (state.running > 0 || this.routers.get(state.key) !== state || !state.groupId && this.rewinding.has(state.assistantId)) return;
     const error = state.turnFailure;
     const busy = todosBusy(this.runtime, state.assistantId, state.groupId);
     if (!error && !busy) releaseIdleTodos(this.runtime, state.assistantId, state.groupId);
@@ -1515,10 +1554,7 @@ export class RouterManager {
    * 配好模型之后再发话就接着聊。
    */
   private sendWithoutModel(assistantId: string, body: SendMessageBody, note: string): Item {
-    const file = this.store.routerFile(assistantId);
-    mkdirSync(dirname(file), { recursive: true });
-    // 会话文件先建空：引擎看到空文件会马上写头，之后的条目才落盘（不然只存在内存里，刷新就没了）
-    if (!existsSync(file)) writeFileSync(file, "");
+    const file = this.prepareTimelineFile(assistantId);
     const manager = SessionManagerImpl.open(file, dirname(file), this.store.home);
     const data = {
       text: body.text,
@@ -1539,6 +1575,7 @@ export class RouterManager {
   }
 
   async send(assistantId: string, body: SendMessageBody): Promise<Item> {
+    while (this.rewinding.has(assistantId)) await this.rewinding.get(assistantId);
     this.clearSuggestions(assistantId);
     this.runtime.delegations.takeOver(assistantId);
     for (const approval of this.store.approvals()) {
@@ -1548,8 +1585,13 @@ export class RouterManager {
       this.bus.emit({ type: "approval", approval: expired });
     }
     const gap = await this.modelGap(assistantId);
+    while (this.rewinding.has(assistantId)) await this.rewinding.get(assistantId);
     if (gap) return this.sendWithoutModel(assistantId, body, gap);
-    const state = await this.ensure(assistantId);
+    let state = await this.ensure(assistantId);
+    while (this.rewinding.has(assistantId) || this.routers.get(state.key) !== state) {
+      await this.rewinding.get(assistantId);
+      state = await this.ensure(assistantId);
+    }
     const data = {
       text: body.text,
       ...(body.quote ? { quote: body.quote } : {}),
@@ -1590,9 +1632,10 @@ export class RouterManager {
     await state.session!.sendCustomMessage({ customType: CONTEXT_TYPE, content: `${nowBlock(this.runtime, assistantId, gid)}\n\n[hob-event] ${text}`, display: false }, { triggerTurn: false });
   }
 
-  async deliverMember(groupId: string, assistantId: string, text: string, received?: () => void, files: string[] = [], workDone = false): Promise<void> {
+  async deliverMember(groupId: string, assistantId: string, text: string, received?: () => void, files: string[] = [], workDone = false, isCurrent?: () => boolean): Promise<void> {
     const state = await this.ensure(assistantId, groupId);
-    await this.deliver(state, text, { received, files, workDone });
+    if (isCurrent && !isCurrent()) return;
+    await this.deliver(state, text, { received, files, workDone, isCurrent });
   }
 
   /**
@@ -1627,7 +1670,7 @@ export class RouterManager {
   private async deliver(
     state: RouterState,
     text: string,
-    options: { files?: string[]; knowledgeQuery?: string; received?: () => void; workDone?: boolean } = {},
+    options: { files?: string[]; knowledgeQuery?: string; received?: () => void; workDone?: boolean; isCurrent?: () => boolean } = {},
   ): Promise<void> {
     this.clearSuggestions(state.assistantId, state.groupId);
     const previousDelivery = state.pendingDelivery;
@@ -1652,6 +1695,7 @@ export class RouterManager {
       await this.waitForCompaction(state);
       await this.applyConversationModel(state);
       await this.refreshTools(state);
+      if (state.stalled || this.routers.get(state.key) !== state || options.isCurrent?.() === false) return;
       // 对话模型能看图就把图片直接给它（路径照样写在「附件」里，派任务时还能交出去）；看不了图就只有路径
       const images = options.files?.length && state.session!.model?.input.includes("image") ? imageContents(options.files) : [];
       unsubscribeReceived = this.onUserReceived(state, promptText, options.received);
@@ -1685,6 +1729,54 @@ export class RouterManager {
       this.setActivity(state, null);
     }
     if (state) await this.abortOrForget(state);
+  }
+
+  async rewind(assistantId: string, beforeItemId: string): Promise<RewindResult | undefined> {
+    while (this.rewinding.has(assistantId)) await this.rewinding.get(assistantId);
+    const assistant = this.store.assistant(assistantId);
+    if (!assistant || !this.derived(assistantId).positions.has(beforeItemId)) return undefined;
+    const work = Promise.resolve().then(async () => {
+      const state = this.routers.get(assistantId);
+      if (state?.pendingEvents?.length) {
+        const pending = state.pendingEvents.splice(0);
+        state.running -= pending.length;
+        for (const event of pending) for (const settle of event.waiters) settle(false);
+      }
+      await this.stop(assistantId);
+      this.clearSuggestions(assistantId);
+      const file = this.store.routerFile(assistantId);
+      const manager = this.routers.get(assistantId)?.manager;
+      const session = manager ? { header: manager.getHeader(), entries: manager.getEntries() } : readSessionFile(file);
+      const sources = new Map<string, number>();
+      const { items } = walk(session.entries, sources);
+      const cut = sources.get(beforeItemId);
+      const itemIndex = items.findIndex((item) => item.id === beforeItemId);
+      if (cut === undefined || itemIndex < 0 || !session.header) return undefined;
+      const cutItem = items[itemIndex]!;
+      const kept = keepSessionEntries(session.entries.slice(0, cut), () => true);
+      const keptItems = walk(kept).items;
+      const keptIds = new Set(keptItems.map(({ id }) => id));
+      const saved = this.store.state(assistantId);
+      const last = keptItems.at(-1);
+      const reactions = Object.fromEntries(Object.entries(saved.reactions ?? {}).filter(([id]) => keptIds.has(id)));
+      this.forgetSession(assistantId);
+      this.itemCache.delete(assistantId);
+      writeRewindFiles([{ file, lines: [session.header, ...kept] }], () => this.store.saveState(assistantId, {
+        reactions, ...(saved.readAt && (!last || saved.readAt > last.at) ? { readAt: last?.at } : {}),
+      }));
+      const questions = new Set(items.slice(itemIndex).flatMap((item) => item.kind === "question" ? [item.approvalId] : []));
+      for (const approval of this.store.approvals()) {
+        if (approval.assistantId !== assistantId || approval.groupId || approval.source !== "router" || approval.status !== "pending" || !questions.has(approval.id)) continue;
+        const expired = { ...approval, status: "expired" as const };
+        this.store.saveApproval(expired);
+        this.bus.emit({ type: "approval", approval: expired });
+      }
+      this.bus.emit({ type: "conversation-rewound", target: "assistant", id: assistantId });
+      this.bus.emit({ type: "assistant", assistant: this.summary(assistant) });
+      return { ok: true as const, removedCount: items.length - itemIndex, ...(cutItem.kind === "user" ? { restoredText: cutItem.text } : {}) };
+    }).finally(() => this.rewinding.delete(assistantId));
+    this.rewinding.set(assistantId, work);
+    return work;
   }
 
   /**
@@ -1771,7 +1863,7 @@ export class RouterManager {
     const state = this.routers.get(this.keyOf(assistantId, groupId));
     if (state?.manager) return state.manager.getEntries();
     try {
-      return readEntries(groupId ? this.store.groupMemberFile(groupId, assistantId) : this.store.routerFile(assistantId));
+      return readSessionFile(groupId ? this.store.groupMemberFile(groupId, assistantId) : this.store.routerFile(assistantId)).entries;
     } catch {
       return [];
     }

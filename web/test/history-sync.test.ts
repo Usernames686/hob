@@ -13,6 +13,8 @@ vi.mock("../src/store.ts", () => ({
   leaveChat: () => change({ mobile: app.gsel ? "topics" : "list" }),
   leaveTopicList: () => change({ mobile: "list", gsel: null }),
   goHome: () => change({ page: "main", mobile: "list" }),
+  closeStars: () => change({ page: "main" }),
+  applyRoute: () => undefined,
   closeImageViewer: () => undefined, closeKnowledge: () => undefined, closePlugins: () => undefined, openPlugins: () => undefined, closeSettings: () => undefined, closeSheet: () => undefined, closeSub: () => undefined, setMobile: () => undefined, setSection: () => undefined,
 }));
 

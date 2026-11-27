@@ -130,23 +130,26 @@ function PluginRow({
   const name = pluginName(manifest, id);
   const description = pluginSummaryText(manifest, pluginDescription(manifest, id));
   const clickable = Boolean(onOpen);
+  const rowAsButton = clickable && !action;
   return (
     <div
       className={`plugin-list-row${clickable ? " clickable" : ""}`}
-      role={clickable ? "button" : undefined}
-      tabIndex={clickable ? 0 : undefined}
+      role={rowAsButton ? "button" : undefined}
+      tabIndex={rowAsButton ? 0 : undefined}
       onClick={onOpen}
-      onKeyDown={onOpen ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } } : undefined}
+      onKeyDown={rowAsButton ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen?.(); } } : undefined}
     >
       <PluginIcon name={name} id={id} manifest={manifest} source={source} />
       <div className="info">
-        <div className="name">{name}</div>
+        {clickable && action ? (
+          <button type="button" className="plugin-card-link" onClick={(event) => { event.stopPropagation(); onOpen?.(); }}>{name}</button>
+        ) : <div className="name">{name}</div>}
         <div className="desc">{description}</div>
         {sourceLabel && <div className="plugin-note">{sourceLabel}</div>}
         {problem && <div className="badline">{problem}</div>}
       </div>
       <span className="plugin-row-end">
-        {action ? <button className="hob-btn plugin-install" onClick={(event) => { event.stopPropagation(); action.onClick(); }}>{action.label}</button> : badge ? <PluginBadge badge={badge} /> : installed ? <span className="plugin-state">{t("已安装")}</span> : null}
+        {action ? <button type="button" className="hob-btn plugin-install" onClick={(event) => { event.stopPropagation(); action.onClick(); }}>{action.label}</button> : badge ? <PluginBadge badge={badge} /> : installed ? <span className="plugin-state">{t("已安装")}</span> : null}
         {clickable && !action ? <Icon name="chev" size={15} className="plugin-row-chevron" /> : null}
       </span>
     </div>
@@ -172,11 +175,16 @@ function PluginCard({ item, sourceLabel, update, onOpen, onInstall, onUpdate }: 
   const meta = [publisher, sourceLabel].filter(Boolean).join(" · ");
   const categories = pluginCategories(item.manifest, item.hasProviders).map(categoryName).join(" · ");
   const unofficial = isUnofficialPlugin(item.manifest, item.hasProviders);
-  const button = (label: string, onClick: () => void) => <button className="hob-btn plugin-install" onClick={(event) => { event.stopPropagation(); onClick(); }}>{label}</button>;
-  return <div className={`plugin-card${onOpen ? " clickable" : ""}`} role={onOpen ? "button" : undefined} tabIndex={onOpen ? 0 : undefined} onClick={onOpen} onKeyDown={onOpen ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } } : undefined}>
+  const button = (label: string, onClick: () => void) => <button type="button" className="hob-btn plugin-install" onClick={(event) => { event.stopPropagation(); onClick(); }}>{label}</button>;
+  const hasAction = !item.error && (update || !item.installed);
+  const cardAsButton = Boolean(onOpen) && !hasAction;
+  return <div className={`plugin-card${onOpen ? " clickable" : ""}`} role={cardAsButton ? "button" : undefined} tabIndex={cardAsButton ? 0 : undefined} onClick={onOpen} onKeyDown={cardAsButton ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen?.(); } } : undefined}>
     <div className="plugin-card-head">
       <PluginIcon name={name} id={item.id} manifest={item.manifest} source={item.source} />
-      <div className="plugin-card-title"><div className="name">{name}</div>{meta && <div className="plugin-card-meta">{meta}</div>}</div>
+      <div className="plugin-card-title">
+        {onOpen && hasAction ? <button type="button" className="plugin-card-link" onClick={(event) => { event.stopPropagation(); onOpen(); }}>{name}</button> : <div className="name">{name}</div>}
+        {meta && <div className="plugin-card-meta">{meta}</div>}
+      </div>
       {item.error ? null : update ? button(t("更新"), onUpdate) : item.installed ? <span className="plugin-state">{t("已安装")}</span> : button(t("安装"), onInstall)}
     </div>
     <div className="plugin-card-desc">{pluginSummaryText(item.manifest, pluginDescription(item.manifest, item.id))}</div>

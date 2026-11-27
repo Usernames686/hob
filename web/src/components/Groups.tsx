@@ -9,6 +9,7 @@ import { Avatar, type AvatarMark } from "../sprites.tsx";
 import { fmtList } from "../util.ts";
 import { openGroup, shallow, useAppSelect, type State } from "../store.ts";
 import type { GroupRowData } from "../home.ts";
+import { useAssistantMenu } from "./AssistantMenu.tsx";
 import { useRowToPin, type PinDragTarget } from "./PinDrag.ts";
 import { t } from "../../../shared/i18n.ts";
 
@@ -62,12 +63,20 @@ function groupMark(g: GroupRowData | GroupSummary): "busy" | "ask" | "done" | un
 /** 置顶区里的群头像：叠放头像 + 群名 + 人数。 */
 export function GroupPin({ g, sel, size = 52, drag }: { g: GroupRowData; sel?: boolean; size?: number; drag?: Pick<PinDragTarget, "handlers" | "takeMoved"> }) {
   const s = useAppSelect(pickAssistants, shallow);
+  const menu = useAssistantMenu(g);
   return (
     <button
       className={`pin${sel ? " sel" : ""}`}
-      onPointerDown={drag?.handlers.onPointerDown}
+      onPointerDown={(e) => {
+        menu.handlers.onPointerDown(e);
+        drag?.handlers.onPointerDown(e);
+      }}
+      onContextMenu={menu.handlers.onContextMenu}
+      onPointerMove={menu.handlers.onPointerMove}
+      onPointerUp={menu.handlers.onPointerUp}
+      onPointerCancel={menu.handlers.onPointerCancel}
       onClick={() => {
-        if (drag?.takeMoved()) return;
+        if (drag?.takeMoved() || menu.takeHeld()) return;
         void openGroup(g.id);
       }}
     >
@@ -80,22 +89,25 @@ export function GroupPin({ g, sel, size = 52, drag }: { g: GroupRowData; sel?: b
 }
 
 /**
- * 左栏的群行：整行点开群聊；能像助手一样拖进置顶区和换先后。
+ * 左栏的群行：整行点开群聊；能像助手一样拖进置顶区、上下换先后以及右键菜单。
  */
 export function GroupRow({ g, size = 42, sel, reorder = false, allowPin = true }: { g: GroupRowData; size?: number; sel?: boolean; reorder?: boolean; allowPin?: boolean }) {
   const s = useAppSelect(pickGroupRow, shallow);
   const prefs = s.groupPrefs[g.id];
+  const menu = useAssistantMenu(g);
   const toPin = useRowToPin({ id: g.id, pinned: Boolean(prefs?.pinned), hidden: false }, reorder);
   return (
     <>
-      <div className={`list-row home-row group-row${sel ? " sel" : ""}`} data-row={allowPin && !prefs?.pinned ? g.id : undefined}>
+      <div className={`list-row home-row group-row${sel ? " sel" : ""}${allowPin && !prefs?.pinned ? " can-pin" : ""}`} data-row={allowPin && !prefs?.pinned ? g.id : undefined}>
         <button
           className={`gline${reorder && allowPin && !prefs?.pinned ? " reorderable" : ""}`}
+          {...menu.handlers}
           onPointerDown={(e) => {
+            menu.handlers.onPointerDown(e);
             if (allowPin && !prefs?.pinned) toPin.onPointerDown(e);
           }}
           onClick={() => {
-            if (allowPin && toPin.takeMoved()) return;
+            if ((allowPin && toPin.takeMoved()) || menu.takeHeld()) return;
             void openGroup(g.id);
           }}
         >
@@ -113,6 +125,7 @@ export function GroupRow({ g, size = 42, sel, reorder = false, allowPin = true }
           {g.unread > 0 ? <span className="gunread" title={t("有未读消息")} aria-label={t("有未读消息")} /> : null}
           {reorder && !prefs?.pinned ? <Icon name="grip" size={14} className="grip list-grip" /> : null}
         </button>
+        {allowPin && !prefs?.pinned && !reorder ? <Icon name="grip" size={14} className="grip" /> : null}
         {toPin.ghost ? createPortal(
           <div className={`pin-ghost${toPin.ghost.over ? " over" : ""}`} style={{ left: toPin.ghost.x, top: toPin.ghost.y }}>
             <GroupCluster g={g} assistants={s.assistants} size={36} />

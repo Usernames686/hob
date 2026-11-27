@@ -12,8 +12,10 @@ import { SMTPServer } from 'smtp-server';
 const certPath = fileURLToPath(new URL('./fixtures/email-test-cert.pem', import.meta.url));
 const cert = readFileSync(certPath), key = readFileSync(new URL('./fixtures/email-test-key.pem', import.meta.url));
 const run = promisify(execFile);
-const host = '127.0.0.2';
-const child = async (script: string, trust = true) => run(process.execPath, ['--input-type=module', '-e', script], {
+// Reach the standard IPv4 loopback listener without enabling the client's local plaintext mode.
+const host = 'localhost.';
+const listenHost = '127.0.0.1';
+const child = async (script: string, trust = true) => run(process.execPath, ['--dns-result-order=ipv4first', '--input-type=module', '-e', script], {
   cwd: process.cwd(), env: { ...process.env, NODE_EXTRA_CA_CERTS: trust ? certPath : '' }, timeout: 10000,
 });
 
@@ -72,7 +74,7 @@ const smtpChild = (port: number, socket: string) => `
 describe('email TLS connections', () => {
   it.each([['SSL'], ['STARTTLS']] as const)('IMAP %s performs a verified TLS handshake', async (mode) => {
     const fixture = imapServer(mode === 'SSL');
-    const port = await new Promise<number>((resolve, reject) => fixture.server.once('error', reject).listen(0, host, () => resolve((fixture.server.address() as import('node:net').AddressInfo).port)));
+    const port = await new Promise<number>((resolve, reject) => fixture.server.once('error', reject).listen(0, listenHost, () => resolve((fixture.server.address() as import('node:net').AddressInfo).port)));
     try {
       if (mode === 'SSL') await expect(child(imapChild(port, mode), false)).rejects.toThrow();
       await child(imapChild(port, mode));
@@ -82,7 +84,7 @@ describe('email TLS connections', () => {
   it.each([['SSL'], ['STARTTLS']] as const)('SMTP %s performs a verified TLS handshake', async (mode) => {
     let secureAuth = false, received = false;
     const smtp = new SMTPServer({ cert, key, secure: mode === 'SSL', onAuth(_auth, session, done) { secureAuth = session.secure; done(null, { user: 'sample' }); }, onData(stream, _session, done) { stream.on('data', () => { received = true; }); stream.on('end', () => done()); } });
-    const port = await new Promise<number>((resolve, reject) => smtp.once('error', reject).listen(0, host, () => resolve((smtp.server.address() as import('node:net').AddressInfo).port)));
+    const port = await new Promise<number>((resolve, reject) => smtp.once('error', reject).listen(0, listenHost, () => resolve((smtp.server.address() as import('node:net').AddressInfo).port)));
     try {
       await child(smtpChild(port, mode));
       expect(secureAuth).toBe(true);

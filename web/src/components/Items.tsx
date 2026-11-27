@@ -25,6 +25,7 @@ import {
   createDraft,
   fileUrl,
   discardPending,
+  editPending,
   pendingKeyOf,
   pendingOf,
   photoUrl,
@@ -32,6 +33,8 @@ import {
   focusComposer,
   jumpToDelegation,
   jumpToHandback,
+  jumpToHistory,
+  openArtifact,
   openFilePreview,
   openLoginDesktop,
   openLivePreview,
@@ -71,6 +74,7 @@ const NOTE_ICON: Record<NoteIcon, IconName> = {
   routine: "clock",
   split: "split",
   info: "info",
+  artifact: "doc",
 };
 
 function NoteWithDetail({ icon, text, detail, fresh }: { icon: NoteIcon; text: string; detail: string; fresh: boolean }) {
@@ -103,21 +107,27 @@ function useNoHover(): boolean {
   return no;
 }
 
-/** 气泡下方的一行工具：回复（引用摘要）/ 复制（原文）。 */
+/** 气泡下方的一行工具：回复（引用摘要）/ 复制（原文）/ 存为文档或导出。 */
 function Tools({
   text,
   itemId,
   menu = false,
   close,
+  onRewind,
+  onSaveDoc,
+  saveDocMode = "markdown",
 }: {
   text: string;
   itemId: string;
   menu?: boolean;
   close?: () => void;
+  onRewind?: () => void;
+  onSaveDoc?: () => void;
+  saveDocMode?: "artifact" | "markdown";
 }) {
   const s = useApp();
   const conversation = s.gsel ? { kind: "group" as const, id: s.gsel } : { kind: "assistant" as const, id: s.sel ?? "" };
-  const starred = s.stars.some((star) => star.conversation.kind === conversation.kind && star.conversation.id === conversation.id && star.itemId === itemId);
+  const starred = (s.stars ?? []).some((star) => star.conversation.kind === conversation.kind && star.conversation.id === conversation.id && star.itemId === itemId);
   const [copied, setCopied] = useState(false);
   const timer = useRef(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -132,6 +142,9 @@ function Tools({
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setCopied(false), 1500);
   };
+
+  const saveLabel = saveDocMode === "artifact" ? t("存为白板文档") : t("导出这条为 Markdown");
+  const saveIcon: IconName = saveDocMode === "artifact" ? "doc" : "dl";
 
   return (
     <>
@@ -148,7 +161,7 @@ function Tools({
       >
         <Icon name="reply" size={16} />{menu ? t("回复") : null}
       </button>
-      <button title={starred ? t("取消收藏") : t("收藏")} aria-label={starred ? t("取消收藏") : t("收藏")} onClick={() => void toggleStar(conversation, itemId)}><Icon name={starred ? "starFilled" : "star"} size={16} /></button>
+      <button title={starred ? t("取消收藏") : t("收藏")} aria-label={starred ? t("取消收藏") : t("收藏")} onClick={() => { void toggleStar(conversation, itemId); close?.(); }}><Icon name={starred ? "starFilled" : "star"} size={16} />{menu ? (starred ? t("取消收藏") : t("收藏")) : null}</button>
       <button
         className={copied ? "copied" : ""}
         title={copied ? t("已复制") : t("复制")}
@@ -157,6 +170,19 @@ function Tools({
       >
         <Icon name={copied ? "check" : "copy"} size={16} />{menu ? t("复制") : null}
       </button>
+      {onSaveDoc ? (
+        <button
+          title={saveLabel}
+          aria-label={saveLabel}
+          onClick={() => {
+            onSaveDoc();
+            close?.();
+          }}
+        >
+          <Icon name={saveIcon} size={16} />{menu ? saveLabel : null}
+        </button>
+      ) : null}
+      {onRewind ? <button className="danger" title={t("回退到这里之前")} aria-label={t("回退到这里之前")} onClick={() => { onRewind(); close?.(); }}><Icon name="dbl" size={16} style={{ transform: "rotate(180deg)" }} />{menu ? t("回退到这里之前") : null}</button> : null}
     </div>
     </>
   );
@@ -164,12 +190,31 @@ function Tools({
 
 type Popup = { anchor: HTMLElement; item: Item; text: string; right: boolean };
 
-function MessagePopup({ popup, close, selectText, closing }: { popup: Popup; close: () => void; selectText: () => void; closing: boolean }) {
+function MessagePopup({
+  popup,
+  close,
+  selectText,
+  closing,
+  onRewind,
+  onSaveDoc,
+  saveDocMode = "markdown",
+}: {
+  popup: Popup;
+  close: () => void;
+  selectText: () => void;
+  closing: boolean;
+  onRewind?: () => void;
+  onSaveDoc?: () => void;
+  saveDocMode?: "artifact" | "markdown";
+}) {
   const s = useApp();
   const conversation = s.gsel ? { kind: "group" as const, id: s.gsel } : { kind: "assistant" as const, id: s.sel ?? "" };
-  const starred = s.stars.some((star) => star.conversation.kind === conversation.kind && star.conversation.id === conversation.id && star.itemId === popup.item.id);
+  const starred = (s.stars ?? []).some((star) => star.conversation.kind === conversation.kind && star.conversation.id === conversation.id && star.itemId === popup.item.id);
   const menu = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top: number; left: number; above: boolean } | null>(null);
+  const actions = actionsFor(popup.item.kind).filter(
+    (action) => (action !== "rewind" || onRewind) && (action !== "saveDoc" || onSaveDoc),
+  );
   useLayoutEffect(() => {
     const el = popup.anchor;
     const oldStyle = el.getAttribute("style");
@@ -177,7 +222,7 @@ function MessagePopup({ popup, close, selectText, closing }: { popup: Popup; clo
     el.style.transition = "none";
     el.style.transform = "none";
     const box = el.getBoundingClientRect();
-    const pos = menuPosition(box, { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight }, popup.right, actionsFor(popup.item.kind).length);
+    const pos = menuPosition(box, { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight }, popup.right, actions.length);
     const placeholder = document.createElement("div");
     const computed = getComputedStyle(el);
     const { padding, backgroundColor, border } = computed;
@@ -205,37 +250,49 @@ function MessagePopup({ popup, close, selectText, closing }: { popup: Popup; clo
       if (oldStyle === null) el.removeAttribute("style"); else el.setAttribute("style", oldStyle);
       placeholder.remove();
     };
-  }, [popup, close]);
+  }, [popup, close, actions.length]);
   useLayoutEffect(() => { popup.anchor.classList.toggle("message-closing", closing); }, [popup, closing]);
   useLayoutEffect(() => { if (position) menu.current?.showPopover(); }, [position]);
   if (!position) return null;
+  const saveLabel = saveDocMode === "artifact" ? t("存为白板文档") : t("导出这条为 Markdown");
+  const saveIcon: IconName = saveDocMode === "artifact" ? "doc" : "dl";
   const run = (action: string) => {
     if (action === "reply") { setQuote({ itemId: popup.item.id, text: plain(popup.text).slice(0, 60) }); focusComposer(); close(); }
     if (action === "copy") void copyText(popup.text).then((ok) => { if (!ok) setNotice(t("复制失败：浏览器不允许写入剪贴板")); close(); });
     if (action === "star") { void toggleStar(conversation, popup.item.id); close(); }
+    if (action === "saveDoc") onSaveDoc?.();
     if (action === "select") selectText();
     if (action === "job" && popup.item.kind === "job") { openJob(popup.item.jobId); close(); }
+    if (action === "rewind") onRewind?.();
   };
   return createPortal(<div ref={menu} popover="manual" className={`message-popup-menu${popup.right ? " right" : ""}${position.above ? " above" : ""}${closing ? " closing" : ""}`} style={{ top: position.top, left: position.left }} onPointerDown={(event) => {
     if (event.target !== event.currentTarget) return;
     const r = event.currentTarget.getBoundingClientRect();
     if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) close();
   }}>
-    {actionsFor(popup.item.kind).map((action) => <button key={action} onClick={() => run(action)}>
-      <span>{action === "reply" ? t("回复") : action === "copy" ? t("复制") : action === "select" ? t("选择文字") : action === "star" ? (starred ? t("取消收藏") : t("收藏")) : t("查看任务详情")}</span>
-      <Icon name={action === "reply" ? "reply" : action === "copy" ? "copy" : action === "select" ? "textSelect" : action === "star" ? (starred ? "starFilled" : "star") : "chev"} size={17} />
+    {actions.map((action) => <button key={action} onClick={() => run(action)}>
+      {action === "rewind" ? <><span>{t("回退到这里之前")}</span><Icon name="dbl" size={17} style={{ transform: "rotate(180deg)" }} /></> : action === "saveDoc" ? <><span>{saveLabel}</span><Icon name={saveIcon} size={17} /></> : <>
+        <span>{action === "reply" ? t("回复") : action === "copy" ? t("复制") : action === "select" ? t("选择文字") : action === "star" ? (starred ? t("取消收藏") : t("收藏")) : t("查看任务详情")}</span>
+        <Icon name={action === "reply" ? "reply" : action === "copy" ? "copy" : action === "select" ? "textSelect" : action === "star" ? (starred ? "starFilled" : "star") : "chev"} size={17} />
+      </>}
     </button>)}
   </div>, document.body);
 }
 
-function jumpToQuote(event: React.MouseEvent<HTMLElement>, itemId: string) {
+function jumpToQuote(event: React.MouseEvent<HTMLElement>, itemId: string, conversation?: { kind: "assistant" | "group"; id: string }) {
   const list = event.currentTarget.closest(".col");
   const target = [...(list?.querySelectorAll<HTMLElement>(".message-row[data-item-id]") ?? [])].find((row) => row.dataset.itemId === itemId);
-  if (target) flashItem(target.classList.contains("message-card-gesture") ? target.querySelector<HTMLElement>(".jobcard, .q, .igen, .filecard, .imgcard, .media-audio, .media-video") ?? target : target);
+  if (target) {
+    flashItem(target.classList.contains("message-card-gesture") ? target.querySelector<HTMLElement>(".jobcard, .q, .igen, .filecard, .imgcard, .media-audio, .media-video") ?? target : target);
+    return;
+  }
+  if (conversation?.id) void jumpToHistory(conversation, itemId);
 }
 
 /** 每条消息工具行的状态。 */
-type ToolsState = { start?: (event: React.PointerEvent) => void; touch: boolean; distance: number; ready: boolean };
+type ToolsState = { start?: (event: React.PointerEvent) => void; touch: boolean; distance: number; ready: boolean; onRewind?: () => void; onSaveDoc?: () => void; saveDocMode: "artifact" | "markdown" };
+type RewindAction = (item: Item) => void;
+type SaveDocAction = (item: Item) => void;
 
 /** 结束了的任务用了多久；没开始跑就结束的（排队时被停）不显示。 */
 function took(job: Job): string | undefined {
@@ -250,6 +307,7 @@ function JobCard({ job: current, round, fresh, itemId }: { job: Job; round?: num
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const sendReply = async () => {
     const value = text.trim();
     if (!value || sending) return;
@@ -261,6 +319,7 @@ function JobCard({ job: current, round, fresh, itemId }: { job: Job; round?: num
   const [swapped, setSwapped] = useState(false); // 状态刚变过：图标播淡出／弹一下
   const reply = useLeave(replying, 200);
   const running = job.status === "running";
+  useEffect(() => { if (!running && stopping) setStopping(false); }, [running, stopping]);
   const canReply = !past && (running || job.status === "waiting");
   const bad = job.status === "stuck" || job.status === "failed";
   const reason = jobReason(job);
@@ -315,7 +374,7 @@ function JobCard({ job: current, round, fresh, itemId }: { job: Job; round?: num
           <div className="acts">
             {canReply ? (
               <button
-                className={`hob-btn job-reply${replying ? " selected" : ""}`}
+                className={`hob-btn hob-btn-tinted job-reply${replying ? " selected" : ""}`}
                 aria-pressed={replying}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -329,13 +388,16 @@ function JobCard({ job: current, round, fresh, itemId }: { job: Job; round?: num
             {running ? (
               <button
                 className="hob-btn hob-btn-danger job-stop"
+                disabled={stopping}
                 onClick={(event) => {
                   event.stopPropagation();
-                  void stopJob(job.id);
+                  if (stopping) return;
+                  setStopping(true);
+                  void stopJob(job.id).finally(() => setStopping(false));
                 }}
               >
-                <Icon name="stop" size={14} />
-                {t("停止")}
+                {stopping ? <Icon name="spin" size={14} className="spin" /> : <Icon name="stop" size={14} />}
+                {stopping ? t("正在停止…") : t("停止")}
               </button>
             ) : null}
           </div>
@@ -735,6 +797,30 @@ export function TopicCard({ topicId, fresh, itemId }: { topicId: string; fresh: 
   );
 }
 
+type GroupPos = "solo" | "first" | "mid" | "last";
+
+function isTextBubble(item: Item | undefined): boolean {
+  return item?.kind === "user" || item?.kind === "assistant";
+}
+
+function sameBubbleRun(a: Item | undefined, b: Item | undefined): boolean {
+  if (!a || !b || !isTextBubble(a) || !isTextBubble(b)) return false;
+  if (a.kind !== b.kind) return false;
+  if (b.lead || needDivider(a.at, b.at)) return false;
+  if (a.kind === "assistant" && (a.routine || (b.kind === "assistant" && b.routine))) return false;
+  if ("speaker" in a && "speaker" in b && (a as GroupItem).speaker !== (b as GroupItem).speaker) return false;
+  return true;
+}
+
+function bubbleGroupPos(prev: Item | undefined, cur: Item, next: Item | undefined): GroupPos {
+  const withPrev = sameBubbleRun(prev, cur);
+  const withNext = sameBubbleRun(cur, next);
+  if (withPrev && withNext) return "mid";
+  if (withPrev) return "last";
+  if (withNext) return "first";
+  return "solo";
+}
+
 function ItemView({
   item,
   inlineDraft,
@@ -743,6 +829,7 @@ function ItemView({
   mentions,
   quoteWho,
   forwarded,
+  groupPos = "solo",
 }: {
   item: Item;
   inlineDraft?: Draft;
@@ -754,6 +841,8 @@ function ItemView({
   quoteWho?: (itemId: string) => string | undefined;
   /** 从综合转进话题的用户消息：气泡上方加一行小字 */
   forwarded?: GroupItem["forwardedFrom"];
+  /** 连续同侧气泡在分组中的位置，用于 IM 级紧凑间距与圆角过渡 */
+  groupPos?: GroupPos;
 }) {
   const s = useApp();
   const enter = fresh ? " enter" : "";
@@ -786,8 +875,9 @@ function ItemView({
       </button>
     );
     const fileRow = (f: string) => <button className="ufile" onClick={() => open(f)}><span className="fi"><Icon name={fileIcon(f)} size={16} /></span><span className="fn">{attachmentName(f)}</span></button>;
+    const grpCls = groupPos !== "solo" ? ` grp-${groupPos}` : "";
     return (
-      <div className="message-row right" id={item.from ? `forward-${item.from.delegationId}` : undefined} data-item-id={item.id} onPointerDown={tools.start} onContextMenu={preventMenu}>
+      <div className={`message-row right${grpCls}`} id={item.from ? `forward-${item.from.delegationId}` : undefined} data-item-id={item.id} onPointerDown={tools.start} onContextMenu={preventMenu}>
         {swipeIcon}
         {/* iMessage：没发出去时气泡左边一个红色感叹号，点了重试；有附件在传时那里转圈 */}
         {pend?.status === "failed" ? (
@@ -813,7 +903,7 @@ function ItemView({
         {hasBubble ? (
         <div className="u" ref={bubble} style={swipeStyle}>
           {item.from ? <button className="forward-label" onClick={() => void (item.from!.delegationId.startsWith("dg-") ? jumpToDelegation(item.from!.assistantId, item.from!.delegationId, false) : jumpToHandback(item.from!.assistantId, item.from!.delegationId, false))}>{(() => { const sender = s.assistants.find((a) => a.id === item.from!.assistantId); return sender ? <Avatar sprite={sender.sprite} prop={sender.prop} size={16} /> : null; })()}{t("转自 {name}", { name: item.from.name })}</button> : null}
-          {item.quote ? <button className={`quote${quoteWho?.(item.quote.itemId) ? " named" : ""}`} onClick={(event) => jumpToQuote(event, item.quote!.itemId)}>{quoteWho?.(item.quote.itemId) ? t("{name}：", { name: quoteWho(item.quote.itemId)! }) : ""}{item.quote.text}</button> : null}
+          {item.quote ? <button className={`quote${quoteWho?.(item.quote.itemId) ? " named" : ""}`} onClick={(event) => jumpToQuote(event, item.quote!.itemId, s.gsel ? { kind: "group", id: s.gsel } : s.sel ? { kind: "assistant", id: s.sel } : undefined)}>{quoteWho?.(item.quote.itemId) ? t("{name}：", { name: quoteWho(item.quote.itemId)! }) : ""}{item.quote.text}</button> : null}
           {/* 其他附件是气泡里的一行文件卡 */}
           {item.text ? <span className={`u-text${item.from ? " u-brief" : ""}`}>{item.from ? <Brief text={item.text} /> : item.text}</span> : null}
           {others.map((f) => (f.startsWith("pending/") ? <Fragment key={f}>{fileRow(f)}</Fragment> : <MediaCard key={f} path={f} name={attachmentName(f)} fallback={fileRow(f)} />))}
@@ -823,17 +913,19 @@ function ItemView({
           <div className="send-status">
             {t("未送达")}
             <button onClick={() => retryPending(pend)}>{t("重试")}</button>
+            <button onClick={() => editPending(pend)}>{t("编辑")}</button>
             <button onClick={() => discardPending(pend)}>{t("删除")}</button>
           </div>
         ) : null}
         {pend ? null : <Reactions itemId={item.id} reactions={item.reactions ?? []} group={Boolean(mentions)} />}
-        {pend ? null : <Tools text={item.text} itemId={item.id} />}
+        {pend ? null : <Tools text={item.text} itemId={item.id} onRewind={tools.onRewind} />}
         </div>
       </div>
     );
   }
 
   if (item.kind === "assistant") {
+    const grpCls = groupPos !== "solo" ? ` grp-${groupPos}` : "";
     return (
       <>
         {item.routine ? (
@@ -843,7 +935,7 @@ function ItemView({
             ) : <><Icon name="clock" size={13} />{item.routine.name}</>}
           </div>
         ) : null}
-        <div className="message-row" data-item-id={item.id} onPointerDown={tools.start} onContextMenu={preventMenu}>
+        <div className={`message-row${grpCls}`} data-item-id={item.id} onPointerDown={tools.start} onContextMenu={preventMenu}>
           {swipeIcon}
           <div className={`hov msg${enter}`}>
           {/* 表格单独成卡片（框内左右滑），前后的文字照旧是气泡；第一块接住滑动回复和菜单定位 */}
@@ -854,13 +946,13 @@ function ItemView({
               </div>
             ) : (
               <div key={i} className={`b${inlineDraft && i === parts.length - 1 ? " wide" : ""}`} ref={i === 0 ? bubble : undefined} style={i === 0 ? swipeStyle : undefined}>
-                {i === 0 && item.quote ? <button className={`quote${quoteWho?.(item.quote.itemId) ? " named" : ""}`} onClick={(event) => jumpToQuote(event, item.quote!.itemId)}>{quoteWho?.(item.quote.itemId) ? t("{name}：", { name: quoteWho(item.quote.itemId)! }) : ""}{item.quote.text}</button> : null}
+                {i === 0 && item.quote ? <button className={`quote${quoteWho?.(item.quote.itemId) ? " named" : ""}`} onClick={(event) => jumpToQuote(event, item.quote!.itemId, s.gsel ? { kind: "group", id: s.gsel } : s.sel ? { kind: "assistant", id: s.sel } : undefined)}>{quoteWho?.(item.quote.itemId) ? t("{name}：", { name: quoteWho(item.quote.itemId)! }) : ""}{item.quote.text}</button> : null}
                 <Markdown text={part.md} streaming={item.streaming && i === parts.length - 1} mentions={mentions} />
                 {inlineDraft && i === parts.length - 1 ? <DraftCard draft={inlineDraft} /> : null}
               </div>
             ),
           )}
-          <Tools text={item.text} itemId={item.id} />
+          <Tools text={item.text} itemId={item.id} onRewind={tools.onRewind} onSaveDoc={tools.onSaveDoc} saveDocMode={tools.saveDocMode} />
           </div>
         </div>
       </>
@@ -871,6 +963,17 @@ function ItemView({
     // 定时任务到执行时间：只写一行。老记录里带着检查到的原始内容，那是给群主的材料，不显示
     if (item.icon === "routine" && isRoutineDueNote(item.text, item.routineId)) {
       return <div className={`sys routine-note${fresh ? " enter-fade" : ""}`}><Icon name="clock" size={14} /><span>{item.text.replace(/，检查到：[\s\S]*$/u, "")}</span></div>;
+    }
+    if (item.artifact) {
+      return (
+        <div className={`sys${fresh ? " enter-fade" : ""}`}>
+          <button className="sys-group sys-artifact" onClick={() => openArtifact(item.artifact!.groupId, item.artifact!.name)}>
+            <Icon name="doc" size={14} />
+            <span>{item.text}</span>
+            <b aria-hidden="true">›</b>
+          </button>
+        </div>
+      );
     }
     // 长原因用统一展开行；一两行能看完的原文直接显示
     if (item.detail) return <NoteWithDetail icon={item.icon} text={item.text} detail={item.detail} fresh={fresh} />;
@@ -960,7 +1063,7 @@ function opensGroup(prev: Item | undefined, cur: Item): boolean {
  * 消息上的指针手势：触屏长按出菜单、左滑回复（桌面上没有这两样，悬停就有工具行）。
  * 单聊的列表和群里的时间线共用这一份。
  */
-function useItemGestures() {
+function useItemGestures(onRewind?: RewindAction, onSaveDoc?: SaveDocAction, saveDocMode: "artifact" | "markdown" = "markdown") {
   const touch = useNoHover();
   const s = useApp();
   const [popup, setPopup] = useState<Popup | null>(null);
@@ -1033,12 +1136,23 @@ function useItemGestures() {
       document.removeEventListener("click", click, true);
     };
   }, [close, selected]);
+  const rewindFor = (item: Item) => {
+    if (!onRewind || !actionsFor(item.kind).includes("rewind") || item.kind === "assistant" && item.streaming || pendingOf(s, pendingKeyOf(s), item.id)) return undefined;
+    return () => onRewind(item);
+  };
+  const saveDocFor = (item: Item) => {
+    if (!onSaveDoc || item.kind !== "assistant" || item.streaming || !item.text.trim()) return undefined;
+    return () => onSaveDoc(item);
+  };
   const toolsFor = (item: Item | GroupItem): ToolsState => {
     const text = item.kind === "job" ? s.jobs[item.jobId]?.title ?? "" : item.kind === "question" ? s.approvals[item.approvalId]?.title ?? "" : item.kind === "image" ? t("图片") : item.kind === "file" ? item.name : "text" in item ? item.text : "";
     return {
       touch,
       distance: swipe?.id === item.id ? swipe.distance : 0,
       ready: swipe?.id === item.id && swipe.ready,
+      onRewind: rewindFor(item),
+      onSaveDoc: saveDocFor(item),
+      saveDocMode,
       start: touch ? (event) => {
         if (event.pointerType !== "touch" || !actionsFor(item.kind).length) return;
         const target = event.target as Element;
@@ -1078,7 +1192,21 @@ function useItemGestures() {
       setSelected(el);
     }, 200);
   };
-  return { toolsFor, popup: popup ? <MessagePopup popup={popup} close={close} selectText={selectText} closing={closing} /> : null };
+  const rewind = popup && rewindFor(popup.item);
+  const saveDoc = popup && saveDocFor(popup.item);
+  return { toolsFor, popup: popup ? <MessagePopup popup={popup} close={close} selectText={selectText} closing={closing} saveDocMode={saveDocMode} onSaveDoc={saveDoc ? () => {
+    suppressClick.current = false;
+    window.clearTimeout(closeTimer.current);
+    setPopup(null);
+    setClosing(false);
+    saveDoc();
+  } : undefined} onRewind={rewind ? () => {
+    suppressClick.current = false;
+    window.clearTimeout(closeTimer.current);
+    setPopup(null);
+    setClosing(false);
+    rewind();
+  } : undefined} /> : null };
 }
 
 /**
@@ -1111,17 +1239,18 @@ function Reactions({ itemId, reactions, group }: { itemId: string; reactions: { 
   if (!reactions.length) return null;
   return <div className="reactions">{reactions.map((r, i) => {
     const a = s.assistants.find((x) => x.id === r.by);
-    return <span className="reaction" key={r.by} title={a?.name}>
+    const title = r.emoji === "👀" ? t("{name} 已查看（未补充发言）", { name: a?.name ?? r.by }) : a?.name;
+    return <span className="reaction" key={r.by} title={title}>
       <span className={`reaction-emoji${pop.has(keys[i]) ? " pop" : ""}`} key={r.emoji}>{r.emoji}</span>
       {group && a ? <Avatar sprite={a.sprite} prop={a.prop} size={16} /> : null}
     </span>;
   })}</div>;
 }
 
-export function ItemList({ items: all }: { items: Item[] }) {
+export function ItemList({ items: all, onRewind, onSaveDoc }: { items: Item[]; onRewind?: RewindAction; onSaveDoc?: SaveDocAction }) {
   const s = useApp();
   const items = visibleItems(all);
-  const { toolsFor, popup } = useItemGestures();
+  const { toolsFor, popup } = useItemGestures(onRewind, onSaveDoc, "markdown");
   const rows: ReactNode[] = [];
   if (items.length && !isToday(items[0].at) && items[0].kind !== "note") {
     rows.push(
@@ -1144,7 +1273,7 @@ export function ItemList({ items: all }: { items: Item[] }) {
         ) : opensGroup(prev, item) ? (
           <div className="g" />
         ) : null}
-        <GestureCard item={item} tools={toolsFor(item)}><ItemView item={item} inlineDraft={inline} fresh={fresh} tools={toolsFor(item)} /></GestureCard>
+        <GestureCard item={item} tools={toolsFor(item)}><ItemView item={item} inlineDraft={inline} fresh={fresh} tools={toolsFor(item)} groupPos={bubbleGroupPos(prev, item, inline ? undefined : next)} /></GestureCard>
       </Fragment>,
     );
   }
@@ -1161,10 +1290,10 @@ export function ItemList({ items: all }: { items: Item[] }) {
  * 群里的时间线：同一个成员连着说的合成一段（左边头像，上面一行名字、群主标签和时间，内容缩进）。
  * 你的消息照旧在右边，系统条目居中。
  */
-export function GroupItemList({ g, items: all }: { g: GroupSummary; items: GroupItem[] }) {
+export function GroupItemList({ g, items: all, onRewind, onSaveDoc }: { g: GroupSummary; items: GroupItem[]; onRewind?: RewindAction; onSaveDoc?: SaveDocAction }) {
   const s = useApp();
   const items = visibleItems(all);
-  const { toolsFor, popup } = useItemGestures();
+  const { toolsFor, popup } = useItemGestures(onRewind, onSaveDoc, "artifact");
   const members = membersOf(g, s.assistants);
   const names = members.map((m) => m.name);
   const nameOf = (speaker: string | "user") =>
@@ -1207,8 +1336,8 @@ export function GroupItemList({ g, items: all }: { g: GroupSummary; items: Group
               {item.speaker === g.ownerId ? <span className="owner">{t("群主")}</span> : null}
               <small>{fmtList(item.at)}</small>
             </div>
-            {run.map((entry) => (
-              <GestureCard key={entry.id} item={entry} tools={toolsFor(entry)}><ItemView item={entry} fresh={isFresh(entry.id)} tools={toolsFor(entry)} mentions={names} quoteWho={quoteWho} /></GestureCard>
+            {run.map((entry, idx) => (
+              <GestureCard key={entry.id} item={entry} tools={toolsFor(entry)}><ItemView item={entry} fresh={isFresh(entry.id)} tools={toolsFor(entry)} mentions={names} quoteWho={quoteWho} groupPos={bubbleGroupPos(run[idx - 1], entry, run[idx + 1])} /></GestureCard>
             ))}
           </div>
         </div>

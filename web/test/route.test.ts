@@ -50,4 +50,14 @@ describe("地址 hash", () => {
     expect(parseRoute("#/settings/nope")).toEqual({ sel: null, settings: true, section: null });
     for (const h of ["", "#", "#/chat", "#/x/y", "#ops", "#/chat/%E0"]) expect(parseRoute(h)).toEqual({ sel: null, settings: false, section: null });
   });
+
+  it("刷新能回到指定话题的文档或新建页", () => {
+    const route = (page: NonNullable<Parameters<typeof routeHash>[0]["panelStack"]>[number]) =>
+      routeHash({ page: "main", section: null, sel: null, gsel: "g-topic", mobile: "chat", panelStack: [page] }, false);
+    const view = { kind: "artifact", groupId: "g-topic", name: "上线 计划.md" } as const;
+    const create = { kind: "artifact", groupId: "g-topic" } as const;
+    expect(parseRoute(route(view)).panel).toEqual(view);
+    expect(parseRoute(route(create)).panel).toEqual(create);
+    expect(route({ ...view, groupId: "g-general" })).toBe("#/group/g-topic");
+  });
 });

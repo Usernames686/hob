@@ -158,7 +158,7 @@ describe("GET /api/files", () => {
       expect(inside.status).toBe(200);
       expect(await inside.text()).toContain("简报");
 
-      const outside = await app.request("/api/files?path=%2Fetc%2Fhostname", { headers: { cookie } });
+      const outside = await app.request(`/api/files?path=${encodeURIComponent(import.meta.filename)}`, { headers: { cookie } });
       expect(outside.status).toBe(403);
     } finally {
       hob.close();

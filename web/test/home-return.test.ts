@@ -21,7 +21,7 @@ beforeAll(async () => {
   server = await createServer({ cacheDir, server: { port: 0, host: "127.0.0.1" } });
   await server.listen();
   await server.transformRequest("/test/home-return-fixture.tsx");
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: "zh-CN" });
   page.setDefaultTimeout(90_000);
 });

@@ -3,13 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { pluginToolsForAssistant } from "../src/plugin-host.ts";
-import { makeHob } from "./helpers.ts";
+import { listenHttp, makeHob } from "./helpers.ts";
 
 let server: Server | undefined;
 afterEach(async () => { await new Promise<void>((resolve) => server ? server.close(() => resolve()) : resolve()); server = undefined; });
 
 // 不登录也能列出工具的远程 MCP（和 Gmail 一样）
-async function listsToolsWithoutLogin(port: number): Promise<void> {
+async function listsToolsWithoutLogin(): Promise<string> {
   server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => { body += chunk; });
@@ -23,17 +23,17 @@ async function listsToolsWithoutLogin(port: number): Promise<void> {
       response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
   });
-  await new Promise<void>((resolve, reject) => { server!.once("error", reject); server!.listen(port, "127.0.0.1", resolve); });
+  return listenHttp(server);
 }
 
 it("声明了 OAuth 但还没登录：不算连上，工具不交给助手，插件页照样列出工具", async () => {
-  await listsToolsWithoutLogin(31807);
+  const base = await listsToolsWithoutLogin();
   const hob = makeHob();
   try {
     const dir = join(hob.home, "plugins/mail");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "plugin.json"), JSON.stringify({ name: "mail", displayName: "Mail", version: "1.0.0" }));
-    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { mail: { type: "http", url: "http://127.0.0.1:31807/mcp", oauth: { clientId: "client", clientSecret: "secret" } } } }));
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { mail: { type: "http", url: `${base}/mcp`, oauth: { clientId: "client", clientSecret: "secret" } } } }));
     writeFileSync(join(hob.home, "system/plugins.json"), JSON.stringify({ plugins: [{ id: "mail", version: "1.0.0", source: "custom", enabled: true, tools: {}, config: {} }] }));
     await hob.runtime.plugins.start();
     const [state] = hob.runtime.plugins.states("mail");

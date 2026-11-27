@@ -36,6 +36,8 @@ const state = vi.hoisted(() => ({
   ],
   groups: [] as GroupSummary[],
   groupProfiles: {} as Record<string, any>,
+  groupArtifacts: {} as Record<string, any>,
+  panelRootTab: null as any,
   profiles: {} as Record<string, any>,
   jobs: {} as Record<string, any>,
   routines: [] as any[],
@@ -87,6 +89,13 @@ vi.mock("../store.ts", () => ({
   openJob: vi.fn(),
   openJobs: vi.fn(),
   openSidebarPage: vi.fn(),
+  openArtifact: vi.fn(),
+  loadGroupArtifacts: vi.fn(async () => undefined),
+  saveGroupArtifact: vi.fn(),
+  exportAssistantMarkdown: vi.fn(),
+  exportGroupMarkdown: vi.fn(),
+  openGroupArtifactsTab: vi.fn(),
+  setGroupPanelRootTab: vi.fn(),
   openFilePreview: vi.fn(),
   openKnowledge: vi.fn(),
   openSettings: vi.fn(),
@@ -100,6 +109,8 @@ vi.mock("../store.ts", () => ({
   send: vi.fn(),
   stopAssistant: vi.fn(),
   stopGroup: vi.fn(),
+  resumeGroupQueue: vi.fn(async () => undefined),
+  discardGroupQueue: vi.fn(async () => undefined),
   attach: vi.fn(),
   removeAttachment: vi.fn(),
   loadOlderItems: vi.fn(),
@@ -158,7 +169,7 @@ const makeGroup = (overrides: Partial<GroupSummary> = {}): GroupSummary => ({
   ...overrides,
 });
 
-describe("群和话题「全员回应」界面", () => {
+describe("群和话题的回应方式", () => {
   beforeEach(() => {
     state.replyMenuOpen = false;
     state.gsel = "g-1";
@@ -185,11 +196,24 @@ describe("群和话题「全员回应」界面", () => {
     expect(topicHtml).toContain("<span>没点名时</span><small>全员回应</small><b>›</b>");
   });
 
-  it("展开菜单（amenu）显示两项二选一且当前项打勾", () => {
+  it("展开菜单显示三个选项且自动选人打勾", () => {
     state.gsel = "t-1";
+    state.groups[1] = makeGroup({ id: "t-1", parentId: "g-1", name: "预算讨论", replyMode: "auto" });
     state.replyMenuOpen = true;
     const html = renderToStaticMarkup(<Panel page={null} />);
     expect(html).toContain('class="amenu select-popup"');
+    expect(html).toContain("<span>没点名时</span><small>自动选人</small><b>›</b>");
+    expect(html).toContain('role="menuitemradio" aria-checked="false" aria-selected="false"><span>群主回应</span></button>');
+    expect(html).toContain('role="menuitemradio" aria-checked="true" aria-selected="true"><span>自动选人</span><svg');
+    expect(html).toContain('role="menuitemradio" aria-checked="false" aria-selected="false"><span>全员回应</span></button>');
+    expect(html).toContain("--seg-count:3");
+    expect(html).toContain(">文档</button>");
+  });
+
+  it("全员回应的话题在菜单中保留全员回应的勾选", () => {
+    state.gsel = "t-1";
+    state.replyMenuOpen = true;
+    const html = renderToStaticMarkup(<Panel page={null} />);
     expect(html).toContain('role="menuitemradio" aria-checked="false" aria-selected="false"><span>群主回应</span></button>');
     expect(html).toContain('role="menuitemradio" aria-checked="true" aria-selected="true"><span>全员回应</span><svg');
   });
@@ -202,13 +226,34 @@ describe("群和话题「全员回应」界面", () => {
     // 综合 · 全员回应
     state.groups[0] = makeGroup({ id: "g-1", replyMode: "all" });
     expect(renderToStaticMarkup(<Chat />)).toContain('placeholder="在综合中发言，未点名时全员依次回应"');
+    state.groups[0] = makeGroup({ id: "g-1", replyMode: "auto" });
+    expect(renderToStaticMarkup(<Chat />)).toContain('placeholder="在综合中发言，未点名时自动选人回应"');
 
     // 话题 · 全员回应
     state.gsel = "t-1";
     expect(renderToStaticMarkup(<Chat />)).toContain('placeholder="在此话题中发言，未点名时全员依次回应"');
+    state.groups[1] = makeGroup({ id: "t-1", parentId: "g-1", name: "预算讨论", replyMode: "auto" });
+    expect(renderToStaticMarkup(<Chat />)).toContain('placeholder="在此话题中发言，未点名时自动选人回应"');
 
     // 话题 · 群主回应
     state.groups[1] = makeGroup({ id: "t-1", parentId: "g-1", name: "预算讨论", replyMode: "owner" });
     expect(renderToStaticMarkup(<Chat />)).toContain('placeholder="在此话题中发言，未点名时由 Hob 接手"');
+  });
+
+  it("有共享文档时在头部和文档标签显示计数，暂停时显示恢复控制条", () => {
+    state.gsel = "g-1";
+    state.groups[0] = makeGroup({ id: "g-1", artifactCount: 2, queue: { pending: ["m1"], paused: true } });
+    const chatHtml = renderToStaticMarkup(<Chat />);
+    expect(chatHtml).toContain('class="chead-doc"');
+    expect(chatHtml).toContain("<span>2</span>");
+    expect(chatHtml).toContain('class="comp-paused"');
+    expect(chatHtml).toContain("已暂停");
+    expect(chatHtml).toContain("产品");
+    expect(chatHtml).toContain("继续");
+    expect(chatHtml).toContain("放弃");
+
+    const panelHtml = renderToStaticMarkup(<Panel page={null} />);
+    expect(panelHtml).toContain('<span class="seg-count">2</span>');
+    expect(panelHtml).toContain('title="导出对话为 Markdown"');
   });
 });

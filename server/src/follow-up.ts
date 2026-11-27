@@ -120,13 +120,22 @@ export function groupLine(item: GroupItem, nameOf: (speaker: string) => string =
   }
 }
 
-/** 把群时间线中的消息转换成推荐模型看到的固定文字。 */
+/** 把群时间线中的消息转换成推荐模型看到的固定文字：按发言人区分用户与助手，避免把助手回复当成用户最后一句。 */
 export function groupHistory(items: readonly GroupItem[], nameOf: (speaker: string) => string = (speaker) => speaker === "user" ? "用户" : speaker): FollowUpTurn[] {
-  return items.map((item) => groupLine(item, nameOf)).filter(Boolean).map((text) => ({ role: "user" as const, text }));
+  return items.flatMap((item) => {
+    const text = groupLine(item, nameOf);
+    if (!text) return [];
+    return [{ role: item.speaker === "user" ? ("user" as const) : ("assistant" as const), text }];
+  });
+}
+
+function formatTurn(turn: FollowUpTurn): string {
+  if (turn.role === "user") return turn.text.startsWith("用户：") ? turn.text : `用户：${turn.text}`;
+  return /^[^：\n]{1,20}：/.test(turn.text) ? turn.text : `助手：${turn.text}`;
 }
 
 export function historyText(turns: readonly FollowUpTurn[]): string {
-  return turns.map((turn) => `${turn.role === "user" ? "用户" : "助手"}：${turn.text}`).join("\n");
+  return turns.map(formatTurn).join("\n");
 }
 
 function estimatedTokens(text: string): number {
@@ -167,8 +176,8 @@ export function followUpContext(systemPrompt: string, turns: readonly FollowUpTu
     systemPrompt,
     messages: [
       ...trimmed.map((turn) => turn.role === "user"
-        ? { role: "user" as const, content: `用户：${turn.text}`, timestamp: 0 }
-        : assistantMessage(`助手：${turn.text}`, model)),
+        ? { role: "user" as const, content: formatTurn(turn), timestamp: 0 }
+        : assistantMessage(formatTurn(turn), model)),
       { role: "user", content: closingRequest(trimmed), timestamp: 0 },
     ],
   };

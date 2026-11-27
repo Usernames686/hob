@@ -15,10 +15,11 @@ export function swipeReply(state: SwipeState): boolean {
   return state.direction === "horizontal" && state.distance > 48;
 }
 
-export type MessageAction = "reply" | "copy" | "select" | "star" | "job";
+export type MessageAction = "reply" | "copy" | "select" | "star" | "saveDoc" | "job" | "rewind";
 
 export function actionsFor(kind: string): MessageAction[] {
-  if (kind === "user" || kind === "assistant") return ["reply", "copy", "star", "select"];
+  if (kind === "user") return ["reply", "copy", "star", "select", "rewind"];
+  if (kind === "assistant") return ["reply", "copy", "star", "saveDoc", "select", "rewind"];
   if (kind === "job") return ["reply", "job"];
   if (kind === "question" || kind === "image" || kind === "file") return ["reply"];
   return [];

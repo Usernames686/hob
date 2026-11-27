@@ -40,14 +40,22 @@ describe("follow-up suggestion history", () => {
     expect(historyText(first)).toBe("用户：整理这份报告\n（图片）\n（文件：notes.txt）\n助手：我先看一下。\n（调用了 read）");
   });
 
-  it("puts speaker names and file markers into group history", () => {
+  it("puts speaker names and file markers into group history and separates user vs assistant roles", () => {
+    const user = { kind: "user", id: "g-0", at: "", speaker: "user", text: "帮我看一下清单" } as GroupItem;
     const item = { kind: "assistant", id: "g-1", at: "", speaker: "ops", text: "清单已经列好。" } as GroupItem;
     const file = { kind: "file", id: "g-2", at: "", speaker: "ops", path: "/tmp/list.md", name: "list.md" } as GroupItem;
     expect(groupLine(item, (speaker) => speaker === "ops" ? "服务器" : "用户")).toBe("服务器：清单已经列好。");
-    expect(groupHistory([item, file], (speaker) => speaker === "ops" ? "服务器" : "用户")).toEqual([
-      { role: "user", text: "服务器：清单已经列好。" },
-      { role: "user", text: "服务器：（调用了 send_file）" },
+    const turns = groupHistory([user, item, file], (speaker) => speaker === "ops" ? "服务器" : "用户");
+    expect(turns).toEqual([
+      { role: "user", text: "用户：帮我看一下清单" },
+      { role: "assistant", text: "服务器：清单已经列好。" },
+      { role: "assistant", text: "服务器：（调用了 send_file）" },
     ]);
+    const model = { api: "openai-completions", provider: "fake", id: "mini", contextWindow: 1000 } as Model<any>;
+    const ctx = followUpContext(FOLLOW_UP_SYSTEM_PROMPT, turns, model);
+    expect(ctx.messages[0]).toMatchObject({ role: "user", content: "用户：帮我看一下清单" });
+    expect(ctx.messages[1]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "服务器：清单已经列好。" }] });
+    expect(ctx.messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("用户最后说的是：「用户：帮我看一下清单」") });
   });
 
   it("drops the oldest half when the history is over half the model window", () => {

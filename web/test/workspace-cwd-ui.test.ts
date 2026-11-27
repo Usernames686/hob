@@ -13,7 +13,7 @@ beforeAll(async () => {
   const address = server.httpServer!.address();
   if (!address || typeof address === "string") throw new Error("测试服务器没有端口");
   baseUrl = `http://127.0.0.1:${address.port}`;
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
   page.setDefaultTimeout(30_000);
 });
@@ -36,21 +36,12 @@ describe("工作目录前端交互与只读展示", () => {
     await expect.poll(() => panel.locator(".field.ro", { hasText: "/workspace/hob-app" }).isVisible()).toBe(true);
     await expect.poll(() => panel.getByText("创建时已绑定，群内及所有话题共用此目录，不可修改。").isVisible()).toBe(true);
 
-    // 回到首页打开新建群弹窗（mock 里运行中的示例任务会定期追加日志并滚动，若撞上菜单自动关闭则重开）
+    // 回到首页打开新建群弹窗
     await page.getByRole("button", { name: "返回首页" }).click();
     await expect.poll(() => page.locator('.home-row[data-row="g-home"]').isVisible()).toBe(true);
     const dialog = page.getByRole("dialog", { name: "新建群" });
-    await expect.poll(async () => {
-      if (await dialog.isVisible()) return true;
-      const createItem = page.getByRole("menuitem", { name: "建群" });
-      if (!(await createItem.isVisible())) {
-        await page.getByRole("button", { name: "新建助手或建群" }).click();
-      }
-      if (await createItem.isVisible()) {
-        await createItem.click({ timeout: 500 }).catch(() => undefined);
-      }
-      return dialog.isVisible();
-    }, { timeout: 15_000 }).toBe(true);
+    await page.getByRole("button", { name: "新建助手或建群" }).click();
+    await page.getByRole("menuitem", { name: "建群" }).click();
 
     // 沿用已绑定工作目录的「敏捷团队」创建：成员自动勾好，但工作目录输入框保持空白
     await dialog.locator(".pick").click();

@@ -70,7 +70,7 @@ describe("新版本小箭头提示", () => {
 
   it("左栏底部「设置」有新版本时带强调色小箭头和读屏说明，没有时不显示", () => {
     const plain = renderToStaticMarkup(<Sidebar />);
-    expect(plain).toContain(">设置</span>");
+    expect(plain).toContain('aria-label="设置"');
     expect(plain).not.toContain("update-dot");
     expect(plain).not.toContain("有新版本");
 

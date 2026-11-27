@@ -21,7 +21,9 @@ import {
   validateCustomProp,
 } from "../../shared/sprites.ts";
 import type { ColorId } from "../../shared/sprites.ts";
+import { isPetColorId, normalizePetColor, parsePetDirect, PET_COLOR_IDS, PET_COLORS, PET_SHAPE_IDS, PET_SHAPES, petSpriteId } from "../../shared/pet.ts";
 import { buildAdminTools } from "./admin-tools.ts";
+import { listGroupArtifacts, readGroupArtifact, writeGroupArtifact } from "./group-artifacts.ts";
 import type { Approval, ApprovalQuestion, ApprovalQuestionInput, CardRecord, CustomProp, Job, Routine, RoutineCheck } from "../../shared/types.ts";
 import { loginCard, prepareLogin } from "./login.ts";
 import { prepareFillNewPassword } from "./new-password.ts";
@@ -39,7 +41,7 @@ import type { HobRuntime } from "./runtime.ts";
 import { assistantSkillsDir, groupSkillsDir, listSkills } from "./assistant-skills.ts";
 import { bundledPlaywrightSkillDir, generalSkillsDir, notEditable, skillDirOf, visibleSkills } from "./skills.ts";
 import { jobView, reviewedSkillsText } from "./job-view.ts";
-import { HANDOVER_EVENT } from "./groups.ts";
+import { handoverEvent } from "./groups.ts";
 import { sessionOrigin } from "./origin.ts";
 import { deleteSkill } from "./delete-skill.ts";
 import { askOptions, cleanRecommended, unnumber } from "./worker-tools.ts";
@@ -498,7 +500,7 @@ export function buildRouterTools(
             description: "要交给任务的文件路径；相对路径以你的工作目录为准，图片会直接给模型查看",
           }),
         ),
-        ...(groupId ? { assistantId: Type.Optional(Type.String({ description: "谁来做：群里一位成员的 id，任务以它的身份运行，用它的技能和记忆。不填就是你自己。" })) } : {}),
+        ...(groupId ? { assistantId: Type.Optional(Type.String({ description: "谁来做：群里一位成员的 id，任务以它的身份运行，用它的技能和记忆，结果回给你（不会让该成员在群里发言；要成员直接发言请在回复里 @ 它的名字）。不填就是你自己。" })) } : {}),
         after: Type.Optional(Type.Array(Type.String(), { description: "可选。要等这些任务完成才开始，填任务 id。前置任务未完成（受阻、失败、已停止），这个任务就不开始，会告诉你。" })),
         expect_minutes: Type.Optional(Type.Number({ description: "可选，预计多少分钟能交结果。超过了会通知你；不填按 10 分钟。" })),
         model: Type.Optional(Type.String({ description: `可选，不填用默认。智能、成本、速度 0–100，越高越智能、越贵、越快：\n${modelText}` })),
@@ -922,6 +924,7 @@ export function buildRouterTools(
       parameters: Type.Object({ path: Type.String({ description: "文件路径；相对路径以你的工作目录为准" }) }),
       execute: async (_id, params: any) => {
         const requested = resolve(cwd, String(params.path));
+        const delegationId = router.currentDelegation(assistantId, groupId);
         // 迁移后的老路径直接换到新位置（不给模型提示），卡片里存新路径
         let path = existsSync(requested) ? requested : resolveMovedPath(runtime.home, requested);
         if (!existsSync(path)) return fail(`文件不存在：${requested}`);
@@ -949,19 +952,20 @@ export function buildRouterTools(
           if (title !== undefined && summary !== undefined) { name = unescape(title); meta = unescape(summary); }
         }
         await router.addItem(assistantId, { kind: "file", path, name, ...(meta ? { meta } : {}) }, groupId);
+        if (delegationId) runtime.delegations.addFile(delegationId, path);
         return ok("已发送。");
       },
     },
     {
       name: "set_avatar",
       label: "更换头像",
-      description: "给自己更换头像：更换内置道具、更换颜色，或用 prop_art 自画一件像素道具。主助手还可以传 assistant 给其他助手更换。",
+      description: "给自己更换极简宠物头像：选择 20 种造型与 11 种配色（或自定义 #rrggbb 十六进制颜色），也兼容旧道具 id。主助手还可以传 assistant 给其他助手更换。",
       parameters: Type.Object({
         sprite: Type.String({
-          description: `内置道具 id 之一（${PROP_IDS.filter((id) => id !== "hob").join(" ")}），或 custom（自画的，同时填 prop_art；已画过时不填 prop_art 就是换回那件）`,
+          description: `宠物造型 id 之一（${PET_SHAPE_IDS.join(" ")}），也兼容旧道具 id 或 custom`,
         }),
         color: Type.Optional(
-          Type.String({ description: `可选：火苗颜色，${COLOR_IDS.join(" ")} 之一；不填用道具的默认色` }),
+          Type.String({ description: `可选：宠物颜色，${PET_COLOR_IDS.join(" ")} 之一或 #rrggbb；不填用造型的默认色` }),
         ),
         prop_art: propArtSchema,
         assistant: Type.Optional(Type.String({ description: "仅主助手：要更换头像的助手 id；不填是自己" })),
@@ -970,38 +974,52 @@ export function buildRouterTools(
         const target = store.assistant(String(params.assistant ?? assistantId));
         if (!target) return fail(`没有这个助手：${params.assistant}`);
         if (target.id !== assistantId && !assistant().primary) return fail("只有主助手能给其他助手更换头像。");
-        const parsed = parseSprite(String(params.sprite ?? ""));
-        if (!parsed) {
+        const rawSprite = String(params.sprite ?? "");
+        const pet = parsePetDirect(rawSprite);
+        const parsed = pet ? undefined : parseSprite(rawSprite);
+        if (!pet && !parsed) {
           return fail(
-            `sprite 要是内置道具 id 之一（${PROP_IDS.filter((id) => id !== "hob").join(" ")}）或 custom，收到「${params.sprite}」。`,
+            `sprite 要是宠物造型 id 之一（${PET_SHAPE_IDS.join(" ")}）或兼容旧道具 id，收到「${params.sprite}」。`,
           );
         }
-        const color = typeof params.color === "string" ? params.color : undefined;
-        if (color !== undefined && !Object.hasOwn(COLORS, color)) {
-          return fail(`color 要是 ${COLOR_IDS.join(" ")} 之一，收到「${color}」。`);
-        }
+        const rawColor = typeof params.color === "string" ? params.color : undefined;
         let sprite: string;
         let prop: CustomProp | undefined;
-        if (parsed.prop === "custom") {
-          if (params.prop_art !== undefined) {
-            const checked = validateCustomProp(params.prop_art);
-            if (!checked.ok) return fail(`prop_art 画得不对：${checked.error}；照着原因改好，再调用一次。`);
-            prop = checked.prop;
-          } else if (!target.prop) {
-            return fail("sprite 是 custom 但还没有画过的道具：要给 prop_art（art、pal、dx）画一件。");
+        let desc: string;
+        if (pet) {
+          if (params.prop_art !== undefined) return fail("使用宠物造型时不需要传 prop_art。");
+          const resolvedColor = rawColor !== undefined ? normalizePetColor(rawColor) : pet.color;
+          if (!resolvedColor) {
+            return fail(`color 要是 ${PET_COLOR_IDS.join(" ")} 之一或 #rrggbb，收到「${rawColor}」。`);
           }
-          sprite = customSprite((color ?? parsed.color) as ColorId);
+          sprite = petSpriteId(pet.shape, resolvedColor);
+          const colorLabel = isPetColorId(resolvedColor) ? PET_COLORS[resolvedColor].name : resolvedColor;
+          desc = `${PET_SHAPES[pet.shape].label} · ${colorLabel}`;
         } else {
-          if (params.prop_art !== undefined) return fail("sprite 是内置道具时不要传 prop_art；要自画一件就把 sprite 填 custom。");
-          sprite = spriteId(parsed.prop, (color ?? parsed.color) as ColorId);
+          if (rawColor !== undefined && !Object.hasOwn(COLORS, rawColor)) {
+            return fail(`color 要是 ${COLOR_IDS.join(" ")} 之一，收到「${rawColor}」。`);
+          }
+          if (parsed!.prop === "custom") {
+            if (params.prop_art !== undefined) {
+              const checked = validateCustomProp(params.prop_art);
+              if (!checked.ok) return fail(`prop_art 画得不对：${checked.error}；照着原因改好，再调用一次。`);
+              prop = checked.prop;
+            } else if (!target.prop) {
+              return fail("sprite 是 custom 但还没有画过的道具：要给 prop_art（art、pal、dx）画一件。");
+            }
+            sprite = customSprite((rawColor ?? parsed!.color) as ColorId);
+          } else {
+            if (params.prop_art !== undefined) return fail("sprite 是内置道具时不要传 prop_art；要自画一件就把 sprite 填 custom。");
+            sprite = spriteId(parsed!.prop, (rawColor ?? parsed!.color) as ColorId);
+          }
+          desc =
+            parsed!.prop === "custom"
+              ? `自画道具 · ${COLORS[(rawColor ?? parsed!.color) as ColorId].name}`
+              : `${PROPS[parsed!.prop].label} · ${COLORS[(rawColor ?? parsed!.color) as ColorId].name}`;
         }
         const next = { ...target, sprite, ...(prop ? { prop } : {}) };
         store.saveAssistant(next);
         bus.emit({ type: "assistant", assistant: runtime.router.summary(next) });
-        const desc =
-          parsed.prop === "custom"
-            ? `自画道具 · ${COLORS[(color ?? parsed.color) as ColorId].name}`
-            : `${PROPS[parsed.prop].label} · ${COLORS[(color ?? parsed.color) as ColorId].name}`;
         await note("info", t("已更换头像 · {assistant} · {description}", { assistant: target.name, description: desc }));
         return ok(t("已更换头像。"));
       },
@@ -1020,6 +1038,7 @@ export function buildRouterTools(
       }),
       execute: async (_id, params: any, signal) => {
         const config = runtime.settings.settings.image;
+        const delegationId = router.currentDelegation(assistantId, groupId);
         const prompt = String(params.prompt ?? "");
         const size = params.size ? String(params.size) : config.source === "openai" ? config.size : undefined;
         const item = await router.addItem(assistantId, { kind: "image", status: "pending", prompt, ...(size ? { size } : {}), startedAt: new Date().toISOString() }, groupId);
@@ -1030,6 +1049,7 @@ export function buildRouterTools(
             ...(Array.isArray(params.refs) && params.refs.length ? { refs: params.refs.map(String) } : {}),
           });
           await router.updateImage(assistantId, item.id, { status: "done", path }, groupId);
+          if (delegationId) runtime.delegations.addFile(delegationId, path);
           return ok(`图片已经显示在对话里。路径：${path}，之后修改图片可以作为参考图。`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1119,6 +1139,8 @@ export function buildRouterTools(
               files,
               ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
             });
+            const delegationId = router.currentDelegation(assistantId, groupId);
+            if (delegationId) runtime.delegations.addTopic(delegationId, topic.id);
             const cancel = () => {
               const current = store.group(topic.id);
               if (current && !current.closedAt && !runtime.groups.summary(topic.id).busy?.length) {
@@ -1133,7 +1155,7 @@ export function buildRouterTools(
             } finally {
               signal?.removeEventListener("abort", cancel);
             }
-            void runtime.groups.deliverEvent(topic.id, topic.ownerId, HANDOVER_EVENT, item.id).catch((error) => console.error("交给群的事件没送到：", error));
+            void runtime.groups.deliverEvent(topic.id, topic.ownerId, handoverEvent(nameOf(assistantId)), item.id).catch((error) => console.error("交给群的事件没送到：", error));
             return endTurn(`已交给群「${group.name}」：创建了话题「${topic.name}」（${topic.id}），群主「${nameOf(topic.ownerId)}」接手。有了结论会回到这里。`);
           } catch (error) {
             return fail(error instanceof Error ? error.message : String(error));
@@ -1178,18 +1200,106 @@ export function buildRouterTools(
     });
   }
 
+  if (groupId) {
+    const canUseArtifacts = () => store.group(groupId)?.members.includes(assistantId);
+    const artifactLine = ({ name, title, version, updatedBy, updatedAt }: import("../../shared/types.ts").GroupArtifactMeta) => {
+      const author = updatedBy === "user" ? "用户" : updatedBy ? nameOf(updatedBy) : "未知作者";
+      return `${title}（${name}，v${version}，${author}，${updatedAt}）`;
+    };
+    tools.push(
+      {
+        name: "write_artifact",
+        label: t("更新白板"),
+        description: "在本群或当前话题的共享白板里创建或更新一份 Markdown 文档（如 需求.md、方案.md），所有成员和用户都能在右栏「文档」中直接查看与协作编辑。",
+        parameters: Type.Object({
+          name: Type.String({ description: "文档文件名，如 需求.md" }),
+          title: Type.Optional(Type.String({ description: "文档标题" })),
+          content: Type.String({ description: "Markdown 全文" }),
+        }),
+        execute: async (_id, params: { name: string; title?: string; content: string }) => {
+          if (!canUseArtifacts()) return fail("你不在这个群或话题里。");
+          try {
+            const { name, title, version } = writeGroupArtifact(runtime.home, groupId, { ...params, updatedBy: assistantId });
+            bus.emit({ type: "group-artifacts", groupId });
+            runtime.groups.appendItem(groupId, assistantId, {
+              kind: "note",
+              icon: "artifact",
+              text: t("{name} 更新了文档「{title}」v{version}", { name: nameOf(assistantId), title, version }),
+              artifact: { groupId, name },
+            });
+            runtime.groups.publish(groupId);
+            return ok(`已保存白板文档「${title}」（${name}，v${version}）。`);
+          } catch (error) {
+            return fail(error instanceof Error ? error.message : String(error));
+          }
+        },
+      },
+      {
+        name: "read_artifact",
+        label: t("查看白板"),
+        description: "查看本群或当前话题的共享白板文档。填 name 读取该文档全文；不填 name 列出当前所有白板文档。",
+        parameters: Type.Object({ name: Type.Optional(Type.String({ description: "要读的文档文件名" })) }),
+        execute: async (_id, params: { name?: string }) => {
+          if (!canUseArtifacts()) return fail("你不在这个群或话题里。");
+          const name = params.name?.trim();
+          try {
+            const artifact = name ? readGroupArtifact(runtime.home, groupId, name) : undefined;
+            if (artifact) {
+              const { content } = artifact;
+              const preview = content.slice(0, 16_000).replace(/[\uD800-\uDBFF]$/, "");
+              const suffix = preview.length < content.length ? `\n\n（仅显示开头 ${preview.length} 字符，全文 ${content.length} 字符。）` : "";
+              return ok(`${artifactLine(artifact)}\n\n${preview}${suffix}`);
+            }
+            const items = listGroupArtifacts(runtime.home, groupId);
+            const scopeLabel = store.group(groupId)?.parentId ? "当前话题" : "本群";
+            if (name) return fail(`找不到白板文档「${name}」。${items.length ? `可用文档：${items.map((item) => item.name).join("、")}。` : `${scopeLabel}还没有白板文档。`}`);
+            return ok(items.length ? items.map(artifactLine).join("\n") : `${scopeLabel}还没有白板文档。`);
+          } catch (error) {
+            return fail(error instanceof Error ? error.message : String(error));
+          }
+        },
+      },
+    );
+  }
+
   // 群主在群里管理话题；不是群主的成员没有这些工具。
   // open_topic 只在综合里；close_topic 综合和话题里都有。
   const ownerGroup = groupId ? store.group(groupId) : undefined;
   if (ownerGroup && ownerGroup.ownerId === assistantId) {
     const gid = ownerGroup.id;
     /** 每次都现查：群主在中途换了，旧会话里的调用也要挡住。 */
-    const notOwner = (): string | null => {
+    const notOwner = (message = "只有群主能创建话题和关闭话题。"): string | null => {
       const group = store.group(gid);
       if (!group) return "这个群和话题只在群里用。";
-      if (group.ownerId !== assistantId) return "只有群主能创建话题和关闭话题。";
+      if (group.ownerId !== assistantId) return message;
       return null;
     };
+    tools.push({
+      name: "call_members",
+      label: t("按序点名成员"),
+      description: "让指定的群成员按顺序逐一发言。可用 note 给他们统一交代；设 return_to_owner: true，所有成员说完后自动交回给你总结收口。",
+      parameters: Type.Object({
+        members: Type.Array(Type.String(), { description: "按发言顺序排列的成员助手 ID 列表" }),
+        note: Type.Optional(Type.String({ description: "可选，给这批成员的统一交代或要求" })),
+        return_to_owner: Type.Optional(Type.Boolean({ description: "全部成员说完后是否自动交回群主。助手委派来的话题默认交回，其余情况默认不交回。" })),
+      }),
+      execute: async (_id, params: { members?: unknown; note?: string; return_to_owner?: boolean }) => {
+        const problem = notOwner("只有群主能按序点名成员。");
+        if (problem) return fail(problem);
+        const available = store.group(gid)!.members.filter((id) => store.assistant(id));
+        const given: unknown[] = Array.isArray(params.members) ? params.members : [];
+        const members = [...new Set(given.filter((id): id is string => typeof id === "string" && available.includes(id)))];
+        if (!members.some((id) => id !== assistantId) || given.some((id) => typeof id !== "string" || !available.includes(id))) {
+          return fail(`members 要填有效的群成员助手 ID，至少点名一位其他成员。可用成员：${available.map((id) => `${nameOf(id)}（${id}）`).join("、")}。`);
+        }
+        try {
+          const returnToOwner = runtime.groups.enqueueMembers(gid, assistantId, members, { note: params.note?.trim(), returnToOwner: params.return_to_owner });
+          return endTurn(`已安排按顺序发言：${members.map(nameOf).join(" → ")}${returnToOwner ? "，完成后将自动交回你收口" : ""}。`);
+        } catch (error) {
+          return fail(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
     /** 这个群进行中的话题，报错时列出来。 */
     const topicList = (): string => {
       const topics = runtime.groups.activeTopics(ownerGroup.parentId ?? gid);

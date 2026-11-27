@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gonePages, layerList, popPage, pushPage, removeMissingLivePages, replacePage, selectPanelStack, panelAssistant, type PanelPage } from "../src/panel-stack.ts";
+import { gonePages, layerList, pageKey, popPage, pushPage, removeMissingLivePages, replacePage, selectPanelStack, panelAssistant, type PanelPage } from "../src/panel-stack.ts";
 
 describe("右栏页面栈", () => {
   it("退回时退掉的页盖在最上面滑出去，换掉栈顶时旧页垫在新页下面", () => {
@@ -31,6 +31,16 @@ describe("右栏页面栈", () => {
   it("创建定时后替换顶页", () => {
     expect(replacePage([{ kind: "assistant" }, { kind: "newRoutine" }], { kind: "routine", id: "r" }))
       .toEqual([{ kind: "assistant" }, { kind: "routine", id: "r" }]);
+  });
+
+  it("同名文档按话题区分，新建表单可以替换成文档页", () => {
+    const general = { kind: "artifact", groupId: "g-main", name: "方案.md" } as const;
+    const topic = { ...general, groupId: "g-topic" };
+    const create = { kind: "artifact", groupId: "g-topic" } as const;
+    const stack = pushPage([general], create);
+    expect(replacePage(stack, topic)).toEqual([general, topic]);
+    expect(pushPage([general, topic], general)).toEqual([general]);
+    expect(new Set([general, topic, create].map(pageKey)).size).toBe(3);
   });
 
   it("只移除消失的实时预览", () => {

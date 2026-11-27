@@ -60,7 +60,7 @@ export function jobStatusIcon(status: JobStatus, size: number, w?: number) {
 export function StatusTag({ meta, card = false, animated = false, swapped = false, children }: {
   meta: StatusMeta; card?: boolean; animated?: boolean; swapped?: boolean; children?: ReactNode;
 }) {
-  const cls = card ? `st${meta.color === "ok" ? " done" : meta.color === "bad" ? " bad" : ""}` : `jt-st${meta.color ? ` ${meta.color}` : ""}`;
+  const cls = card ? `st${meta.color === "ok" ? " done" : meta.color === "bad" ? " bad" : meta.color === "live" ? " live" : ""}` : `jt-st${meta.color ? ` ${meta.color}` : ""}`;
   return <span className={cls}>
     {animated ? <span className="stico">
       <Icon name="spin" size={14} w={2} className={`spin stspin${meta.spin ? "" : " off"}`} />

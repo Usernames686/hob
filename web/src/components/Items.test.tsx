@@ -1,18 +1,20 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { Approval, ApprovalQuestion, Draft, Item, JobStatus, SedimentStatus } from "../../../shared/types.ts";
+import type { Approval, ApprovalQuestion, Draft, GroupItem, GroupSummary, Item, JobStatus, SedimentStatus } from "../../../shared/types.ts";
 import { ROUTINE_DUE_TEXT_LEGACY } from "../../../shared/routine-note.ts";
 
 const state = vi.hoisted(() => ({ sediment: undefined as SedimentStatus | undefined, status: "done" as JobStatus, statusReason: undefined as string | undefined, approvals: {} as Record<string, Approval>, drafts: {} as Record<string, Draft> }));
 
 vi.mock("../store.ts", () => ({
-  useApp: () => ({ assistants: [], approvals: state.approvals, drafts: state.drafts, delegations: {}, livePages: {}, sel: "hob", jobs: { "t-1": { id: "t-1", title: "测试任务", status: state.status, statusReason: state.statusReason, sediment: state.sediment, assistantId: "hob", createdAt: "2026-01-01T00:00:00Z", stats: { reads: 0, commands: 0, edits: 0 } } } }),
-  photoUrl: (path: string) => path, fileUrl: (path: string) => path,
+  useApp: () => ({ assistants: [], stars: [], approvals: state.approvals, drafts: state.drafts, delegations: {}, livePages: {}, sel: "hob", jobs: { "t-1": { id: "t-1", title: "测试任务", status: state.status, statusReason: state.statusReason, sediment: state.sediment, assistantId: "hob", createdAt: "2026-01-01T00:00:00Z", stats: { reads: 0, commands: 0, edits: 0 } } } }),
+  photoUrl: (path: string) => path, fileUrl: (path: string) => path, openArtifact: vi.fn(),
+  pendingKeyOf: () => "assistant:hob",
+  pendingOf: () => undefined,
 }));
 vi.mock("./ImageGen.tsx", () => ({ ImageGenCard: ({ itemId }: { itemId: string }) => <div data-item-id={itemId}>生成的图片</div> }));
 vi.mock("./Markdown.tsx", () => ({ Markdown: () => null }));
 
-import { ItemList, visibleItems } from "./Items.tsx";
+import { GroupItemList, ItemList, visibleItems } from "./Items.tsx";
 
 const card = () => renderToStaticMarkup(<ItemList items={[{ kind: "job", id: "item", at: "2026-01-01T00:00:00Z", jobId: "t-1" }]} />);
 
@@ -117,6 +119,11 @@ describe("对话卡片出处", () => {
       expect(html).not.toMatch(/<button[^>]*>[^<]*已修改规则/);
       expect(html).toContain("旧提示");
       expect(html).toContain("已修改规则");
+
+      const artifactNote: Item = { kind: "note", id: "n-art", at, icon: "artifact", text: "Hob 更新了文档「方案」v1", artifact: { groupId: "g-1", name: "方案.md" } };
+      expect(visibleItems([artifactNote]).map((item) => item.id)).toEqual(["n-art"]);
+      const artHtml = renderToStaticMarkup(<ItemList items={[artifactNote]} />);
+      expect(artHtml).toMatch(/<button class="sys-group sys-artifact"[^>]*>[\s\S]*?<span>Hob 更新了文档「方案」v1<\/span><b aria-hidden="true">›<\/b><\/button>/);
     } finally { vi.unstubAllGlobals(); }
   });
 
@@ -212,5 +219,40 @@ describe("对话里只放用户要看的", () => {
       { kind: "job", id: "a2", at, jobId: "t-a", round: 2 },
     ];
     expect(visibleItems(items).map((item) => item.id)).toEqual(["b0", "u", "a2"]);
+  });
+
+  it("群聊助手消息显示「存为白板文档」，单聊助手消息显示「导出这条为 Markdown」", () => {
+    vi.stubGlobal("window", { matchMedia: () => ({ matches: false }) });
+    try {
+      const soloItems: Item[] = [
+        { kind: "user", id: "u-1", at, text: "帮我总结" },
+        { kind: "assistant", id: "a-1", at, text: "# 总结\n内容" },
+        { kind: "assistant", id: "a-2", at, text: "流式输出中", streaming: true },
+      ];
+      const soloHtml = renderToStaticMarkup(<ItemList items={soloItems} onSaveDoc={vi.fn()} />);
+      expect(soloHtml.match(/title="导出这条为 Markdown"/g)).toHaveLength(1);
+      expect(soloHtml).not.toContain('title="存为白板文档"');
+
+      const group: GroupSummary = {
+        id: "g-1",
+        name: "产品群",
+        purpose: "讨论需求",
+        ownerId: "hob",
+        members: ["hob"],
+        createdAt: at,
+        unread: 0,
+        busy: [],
+      };
+      const groupItems: GroupItem[] = [
+        { kind: "user", id: "g-u1", at, speaker: "user", text: "给出方案" },
+        { kind: "assistant", id: "g-a1", at, speaker: "hob", text: "# 方案\n详细内容" },
+        { kind: "assistant", id: "g-a2", at, speaker: "hob", text: "还在写", streaming: true },
+      ];
+      const groupHtml = renderToStaticMarkup(<GroupItemList g={group} items={groupItems} onSaveDoc={vi.fn()} />);
+      expect(groupHtml.match(/title="存为白板文档"/g)).toHaveLength(1);
+      expect(groupHtml).not.toContain('title="导出这条为 Markdown"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

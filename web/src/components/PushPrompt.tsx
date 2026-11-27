@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { t } from "../../../shared/i18n.ts";
 import { canShowPushPrompt, currentSubscription, PUSH_PROMPT_DISMISSED, pushSupported } from "../push.ts";
-import { connectPush } from "../store.ts";
+import { connectPush, setNotice } from "../store.ts";
 
 export function PushPrompt() {
   const [visible, setVisible] = useState(false);
@@ -46,6 +46,7 @@ export function PushPrompt() {
   const dismiss = () => {
     localStorage.setItem(PUSH_PROMPT_DISMISSED, "1");
     setVisible(false);
+    setNotice(t("之后可以在 设置 → 通知 中开启"));
   };
 
   return (

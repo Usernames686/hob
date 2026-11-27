@@ -73,6 +73,29 @@ describe("混排置顶", () => {
     expect(store.getState().assistants.find(a => a.id === "a")?.pinOrder).toBe(1);
     expect(store.getState().assistants.find(a => a.id === "b")?.pinOrder).toBe(8);
   });
+  it("取消置顶对群和非主助手生效，主助手保持置顶", async () => {
+    const state = store.getState();
+    state.groups = [{ id: "g", name: "群", purpose: "", ownerId: "a", members: ["a"], busy: [], unread: 0, createdAt: "2026-01-01" }];
+    state.groupPrefs = { g: { pinned: true, pinOrder: 0 } };
+    state.assistants = [
+      { id: "main", name: "Hob", duty: "", primary: true, pinned: true, hidden: false, createdAt: "2026-01-01" },
+      { id: "a", name: "a", duty: "", primary: false, pinned: true, hidden: false, createdAt: "2026-01-01" },
+    ] as typeof state.assistants;
+    patchAssistant.mockClear();
+    patchAssistant.mockResolvedValue({});
+
+    expect(await store.unpinConversation("g")).toBeNull();
+    expect(store.getState().groupPrefs.g?.pinned).toBe(false);
+
+    expect(await store.unpinConversation("a")).toBeNull();
+    expect(patchAssistant).toHaveBeenCalledWith("a", { pinned: false });
+    expect(store.getState().assistants.find((item) => item.id === "a")?.pinned).toBe(false);
+
+    patchAssistant.mockClear();
+    expect(await store.unpinConversation("main")).toBeNull();
+    expect(patchAssistant).not.toHaveBeenCalled();
+    expect(store.getState().assistants.find((item) => item.id === "main")?.pinned).toBe(true);
+  });
 });
 
 describe("助手固定顺序", () => {

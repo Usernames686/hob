@@ -15,6 +15,7 @@ import {
 } from "../store.ts";
 import { fmtBytes, fmtWhen } from "../util.ts";
 import { FilePreviewOverlay } from "./FilePreview.tsx";
+import { DialogShell } from "./DialogShell.tsx";
 import { t } from "../../../shared/i18n.ts";
 
 const groupKinds: [KnowledgeGroup | "", string][] = [
@@ -68,6 +69,8 @@ function NameInput({ initial = "", label, save, cancel }: { initial?: string; la
 function Categories({ collections, selected, narrow }: { collections: KnowledgeCollection[]; selected: string; narrow: boolean }) {
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<KnowledgeCollection | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const menu = useMenu();
   const current = collections.find((c) => c.id === menu.menu?.id);
   const rows = <>
@@ -118,10 +121,34 @@ function Categories({ collections, selected, narrow }: { collections: KnowledgeC
           <button onClick={() => { menu.close(); setRenaming(current.id); }}>{t("改名")}</button>
           <button onClick={() => {
             menu.close();
-            if (window.confirm(collectionDeleteText(current.name))) void deleteKnowledgeCollection(current.id);
+            setConfirmDelete(current);
           }}>{t("删除")}</button>
         </div>, document.body,
       )}
+      {confirmDelete ? (
+        <DialogShell
+          label={t("删除知识库")}
+          title={t("删除知识库")}
+          onClose={() => { if (!deleting) setConfirmDelete(null); }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (deleting) return;
+            setDeleting(true);
+            void deleteKnowledgeCollection(confirmDelete.id).finally(() => {
+              setDeleting(false);
+              setConfirmDelete(null);
+            });
+          }}
+          actions={
+            <>
+              <button type="button" className="hob-btn" disabled={deleting} onClick={() => setConfirmDelete(null)} autoFocus>{t("取消")}</button>
+              <button type="submit" className="hob-btn hob-btn-danger" disabled={deleting}>{deleting ? t("正在删除…") : t("确认删除")}</button>
+            </>
+          }
+        >
+          <div>{collectionDeleteText(confirmDelete.name)}</div>
+        </DialogShell>
+      ) : null}
     </nav>
   );
 }
@@ -328,7 +355,12 @@ export function Knowledge({ narrow, leaving }: { narrow: boolean; leaving: boole
   };
   useEffect(() => {
     if (s.page !== "knowledge" || preview) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeKnowledge(); };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable=true]") || target?.closest("[role=dialog], .amenu")) return;
+      closeKnowledge();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [s.page, preview]);

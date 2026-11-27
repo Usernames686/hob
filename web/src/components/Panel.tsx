@@ -10,14 +10,16 @@ import { useMenu } from "./use-menu.ts";
 import { skillUsage } from "../skill-usage.ts";
 import { skillOriginText } from "../skill-origin.ts";
 import { commandSummary } from "../../../shared/command.ts";
-import type { PluginView, ActivityLine, Assistant, CustomProp, GroupSummary, ModelInfo, ModelsView, Routine, Rule, ThinkingLevel } from "../../../shared/types.ts";
+import type { PluginView, ActivityLine, Assistant, CustomProp, GroupReplyMode, GroupSummary, ModelInfo, ModelsView, Routine, Rule, ThinkingLevel } from "../../../shared/types.ts";
 import { Icon } from "../icons.tsx";
 import { BrandIcon, brandForRef } from "../brand-icons.tsx";
 import { assistantStatus, followingModel, formatNext, nextRoutine, sidebarJobs } from "../sidebar-data.ts";
 import { PanelRootDetails } from "./PanelRootDetails.tsx";
+import { ArtifactPage } from "./ArtifactPage.tsx";
 import { PluginIcon } from "./Plugins.tsx";
 import { fitThinking, rosterOptions } from "../model-list.ts";
-import { COLOR_IDS, COLORS, customSprite, parseSprite, PROP_IDS, PROPS, spriteId } from "../../../shared/sprites.ts";
+import { PetPicker } from "./PetPicker.tsx";
+import type { PetActionId } from "../../../shared/pet.ts";
 import { Avatar } from "../sprites.tsx";
 import { useLeave } from "../motion.ts";
 import { useDesktopScreens } from "../desktop-screens.ts";
@@ -29,6 +31,8 @@ import {
   createRoutine,
   deleteRule,
   deleteRoutine,
+  exportAssistantMarkdown,
+  exportGroupMarkdown,
   jumpToJob,
   jumpToDelegation,
   loadPlugins,
@@ -69,6 +73,7 @@ import { DELEGATION_STATUS, JOB_STATUS, StatusTag, jobStatusIcon } from "./statu
 import { GroupCluster, membersOf } from "./Groups.tsx";
 import { PlaceJobs, TopicClose } from "./Topics.tsx";
 import { topicsOf } from "../topics.ts";
+import { downloadMarkdownFile } from "../download.ts";
 
 // noVNC 要顶层 await，单独分包按需加载
 const DesktopMini = lazy(() => import("./DesktopView.tsx").then((m) => ({ default: m.DesktopMini })));
@@ -97,14 +102,32 @@ export function Panel({ mobile = false, page }: { mobile?: boolean; page?: Panel
   const group = s.gsel && !member ? s.groups.find((g) => g.id === s.gsel) : undefined;
   const groupScope = "groupId" in panel && (panel.kind === "routines" || panel.kind === "skills" || panel.kind === "rules" || panel.kind === "newRoutine") ? panel.groupId : undefined;
   const [rootScrolled, setRootScrolled] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const selectedAssistant = s.profiles[panelAssistant(s.panelStack, s.sel)]?.assistant ?? s.assistants.find((a) => a.id === (panelAssistant(s.panelStack, s.sel)));
   const desktop = useDesktopScreens();
   const focus = !mobile && kind === "now" && s.nowWide && panelDesk(s.panelStack, s.sel, s.gsel, s.groups, desktop).running;
   useEffect(() => setRootScrolled(false), [s.sel, s.gsel]);
-  const title = panel.kind === "routine" ? s.routines.find((r) => r.id === panel.id)?.name ?? t("定时任务") : kind === "newRoutine" ? t("新建定时任务") : kind === "routines" ? t("定时任务") : kind === "skills" ? t("技能") : kind === "knowledge" ? t("知识库") : kind === "rules" ? t("执行前确认") : kind === "now" ? "" : kind === "groupSettings" ? t("编辑群") : t("编辑助手");
+  const canExport = kind === "now" && !member && Boolean(group || s.sel);
+  const handleExport = async () => {
+    if (exporting || !canExport) return;
+    setExporting(true);
+    try {
+      const result = group ? await exportGroupMarkdown(group.id) : await exportAssistantMarkdown(s.sel!);
+      if (!result.ok) {
+        setNotice(t("导出失败：{error}", { error: result.error }));
+        return;
+      }
+      downloadMarkdownFile(result.data.filename, result.data.content);
+      setNotice(t("已导出「{name}」", { name: result.data.filename }));
+    } finally {
+      setExporting(false);
+    }
+  };
+  const title = panel.kind === "routine" ? s.routines.find((r) => r.id === panel.id)?.name ?? t("定时任务") : kind === "newRoutine" ? t("新建定时任务") : kind === "routines" ? t("定时任务") : kind === "skills" ? t("技能") : kind === "knowledge" ? t("知识库") : kind === "rules" ? t("执行前确认") : kind === "now" ? "" : kind === "groupSettings" ? t("编辑群") : panel.kind === "artifact" ? panel.name ? t("文档") : t("新建文档") : t("编辑助手");
   return (
     <aside className={`panel${focus ? " desktop-focus" : ""}`} onScroll={(event) => { if (kind === "now") { const card = event.currentTarget.querySelector(".sidebar-card"); const head = event.currentTarget.querySelector(".phead"); setRootScrolled(!!card && !!head && card.getBoundingClientRect().bottom <= head.getBoundingClientRect().bottom); } }}>
       {!focus ? <PanelHead className="phead" root={kind === "now" && !member} close={false} title={<span className="t">{kind === "now" && !group && !focus && rootScrolled && selectedAssistant ? <span className="sidebar-head-identity"><Avatar sprite={selectedAssistant.sprite} prop={selectedAssistant.prop} size={24} />{selectedAssistant.name}</span> : title}</span>}>
+        {canExport ? <button className="hob-icon-btn" title={t("导出对话为 Markdown")} aria-label={t("导出对话为 Markdown")} disabled={exporting} onClick={() => void handleExport()}><Icon name={exporting ? "spin" : "dl"} size={17} className={exporting ? "spin" : undefined} /></button> : null}
         {kind === "now" && !group ? <button className="hob-icon-btn" title={t("编辑助手")} onClick={openAssistantPanel}><Icon name="edit" size={17} /></button> : null}
         {kind === "now" && group ? <button className="hob-icon-btn" title={t("编辑群")} onClick={() => openGroupSettings(group.parentId ?? group.id)}><Icon name="edit" size={17} /></button> : null}
         {kind === "routines" ? <button className="hob-icon-btn" title={t("新建定时任务")} onClick={openNewRoutine}><Icon name="plus" size={17} /></button> : null}
@@ -117,6 +140,8 @@ export function Panel({ mobile = false, page }: { mobile?: boolean; page?: Panel
           <NewRoutine groupId={groupScope} />
         ) : panel.kind === "groupSettings" ? (
           <GroupSettings id={panel.id} />
+        ) : panel.kind === "artifact" ? (
+          <ArtifactPage key={JSON.stringify([panel.groupId, panel.name])} groupId={panel.groupId} name={panel.name} />
         ) : kind === "assistant" ? (
           <AssistantSettings key={panelAssistant(s.panelStack, s.sel)} />
         ) : kind === "routines" ? <RoutineList groupId={groupScope} /> : kind === "skills" ? <AssistantSkills aid={groupScope ?? panelAssistant(s.panelStack, s.sel)} /> : kind === "knowledge" ? <AssistantKnowledge aid={panelAssistant(s.panelStack, s.sel)} /> : kind === "rules" ? <AssistantRules aid={groupScope ?? panelAssistant(s.panelStack, s.sel)} group={!!groupScope} /> : group && !focus ? (
@@ -150,6 +175,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
   const picked = menu.menu ? s.assistants.find((a) => a.id === menu.menu!.id) : undefined;
   const target = topic ?? g;
   const replyMode = target.replyMode ?? "owner";
+  const replyLabels = { owner: t("群主回应"), auto: t("自动选人"), all: t("全员回应") };
 
   const change = async (patch: { ownerId?: string; members?: string[] }) => {
     const failure = await patchGroup(g.id, patch);
@@ -157,7 +183,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
     return !failure;
   };
 
-  const changeReplyMode = async (mode: "owner" | "all") => {
+  const changeReplyMode = async (mode: GroupReplyMode) => {
     const failure = await patchGroup(target.id, { replyMode: mode });
     if (failure) setNotice(t("保存失败：{error}", { error: failure }));
   };
@@ -199,7 +225,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
           >
             <Icon name="reply" size={15} />
             <span>{t("没点名时")}</span>
-            <small>{replyMode === "all" ? t("全员回应") : t("群主回应")}</small>
+            <small>{replyLabels[replyMode]}</small>
             <b>›</b>
           </button>
         )}
@@ -248,7 +274,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
         )}
       </div>
 
-      <PanelRootDetails groupId={g.id} part="tabs" />
+      <PanelRootDetails groupId={g.id} artifactGroupId={target.id} part="tabs" />
 
       {ending ? (
         <div className="group-card sidebar-card-group mergeconfirm">
@@ -272,10 +298,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
 
       {replyMenu.menu ? createPortal(
         <div className="amenu select-popup" ref={replyMenu.box} role="menu" style={{ minWidth: 160 }}>
-          {([
-            { mode: "owner" as const, label: t("群主回应") },
-            { mode: "all" as const, label: t("全员回应") },
-          ]).map(({ mode, label }) => (
+          {(["owner", "auto", "all"] as const).map((mode) => (
             <button
               key={mode}
               type="button"
@@ -287,7 +310,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
                 if (replyMode !== mode) void changeReplyMode(mode);
               }}
             >
-              <span>{label}</span>
+              <span>{replyLabels[mode]}</span>
               {replyMode === mode ? <Icon name="check" size={15} /> : null}
             </button>
           ))}
@@ -397,7 +420,23 @@ function PanelNow({ mobile, focus, deskOnly = false, children }: { mobile: boole
   return (
     <>
     <div className="group-card sidebar-card">
-      {assistant ? <div className="sidebar-identity"><Avatar sprite={assistant.sprite} prop={assistant.prop} size={44} /><span><strong>{assistant.name}</strong><small>{assistant.duty}</small></span><em className={status !== "空闲" ? "active" : ""}><span key={status}>{t(status)}</span></em></div> : null}
+      {assistant ? (
+        <div className="sidebar-identity">
+          <Avatar
+            sprite={assistant.sprite}
+            prop={assistant.prop}
+            size={54}
+            free
+            live
+            interactive
+            follow
+            glow={status !== "空闲"}
+            petState={status === "等你确认" ? "curious" : status === "空闲" ? "idle" : "thinking"}
+          />
+          <span><strong>{assistant.name}</strong><small>{assistant.duty}</small></span>
+          <em className={status !== "空闲" ? "active" : ""}><span key={status}>{t(status)}</span></em>
+        </div>
+      ) : null}
       {!assistant?.primary && assistant?.cwd ? (
         <div className="gpanel-origin"><small>{t("工作目录")}</small>{assistant.cwd}</div>
       ) : null}
@@ -982,48 +1021,54 @@ function AssistantSkills({ aid }: { aid: string }) {
   </>;
 }
 
-/** 换头像：自画的道具（有就排第一个）+ 内置道具，都按当前颜色预览，下面一排换颜色。 */
-function SpritePicker({ aid, sprite, prop, onDone }: { aid: string; sprite: string; prop?: CustomProp; onDone: () => void }) {
+/** 换头像：5×4 GrokBot 图形化宠物造型网格 + 11 色官方圆点 + 自定义颜色，切换时上方大宠物实时 48 点弹簧 Morph 变形。 */
+function SpritePicker({
+  aid,
+  sprite,
+  onPreview,
+  onAction,
+  onDone,
+}: {
+  aid: string;
+  sprite: string;
+  onPreview: (next: string) => void;
+  onAction: (action: PetActionId) => void;
+  onDone: () => void;
+}) {
   const feedback = useAssistantSave(aid);
-  const parsed = parseSprite(sprite) ?? { prop: "hob" as const, color: "slate" as const };
-  const pick = (next: string) => {
-    if (next !== sprite) void feedback.save({ sprite: next });
+  const colorTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(colorTimer.current), []);
+  const pick = (next: string, debounced = false) => {
+    onPreview(next);
+    if (next === sprite) return;
+    window.clearTimeout(colorTimer.current);
+    if (debounced) {
+      colorTimer.current = window.setTimeout(() => { void feedback.save({ sprite: next }); }, 250);
+    } else {
+      void feedback.save({ sprite: next });
+    }
   };
+  const actions: [PetActionId, string][] = [
+    ["bounce", t("弹跳")],
+    ["shake", t("摇头")],
+    ["peek", t("探头")],
+    ["pinch", t("捏脸")],
+    ["squish", t("压扁")],
+    ["celebrate", t("庆祝")],
+  ];
   return (
     <>
       <PanelSaveStatus message={feedback.message} />
-      <div className="sprite-pick">
-        {prop ? (
-          <button
-            className={parsed.prop === "custom" ? "on" : undefined}
-            title={t("自画道具")}
-            onClick={() => pick(customSprite(parsed.color))}
-          >
-            <Avatar sprite={customSprite(parsed.color)} prop={prop} size={34} />
-          </button>
-        ) : null}
-        {PROP_IDS.map((p) => (
-          <button
-            key={p}
-            className={p === parsed.prop ? "on" : undefined}
-            title={PROPS[p].label}
-            onClick={() => pick(spriteId(p, parsed.color))}
-          >
-            <Avatar sprite={spriteId(p, parsed.color)} size={34} />
+      <PetPicker sprite={sprite} onChange={pick} />
+      <div className="pet-actions">
+        {actions.map(([act, label]) => (
+          <button key={act} type="button" className="pet-act-pill" onClick={() => onAction(act)}>
+            {label}
           </button>
         ))}
       </div>
-      <div className="sprite-colors">
-        {COLOR_IDS.map((c) => (
-          <button
-            key={c}
-            className={c === parsed.color ? "on" : undefined}
-            title={COLORS[c].name}
-            style={{ background: COLORS[c].o }}
-            onClick={() => pick(parsed.prop === "custom" ? customSprite(c) : spriteId(parsed.prop, c))}
-          />
-        ))}
-        <button className="hob-btn" onClick={onDone}>
+      <div className="sprite-colors-foot">
+        <button type="button" className="hob-btn" onClick={onDone}>
           {t("完成")}
         </button>
       </div>
@@ -1123,19 +1168,47 @@ function AssistantSettings() {
   const aid = panelAssistant(s.panelStack, s.sel);
   const profile = s.profiles[aid];
   const [picking, setPicking] = useState(false);
+  const [previewSprite, setPreviewSprite] = useState<string | null>(null);
+  const [petAct, setPetAct] = useState<{ action: PetActionId; seq: number }>({ action: "bounce", seq: 0 });
   const [archiving, setArchiving] = useState(false);
   const feedback = useAssistantSave(aid);
+  useEffect(() => {
+    setPreviewSprite(null);
+  }, [aid, profile?.assistant.sprite]);
   if (!profile) return <Empty><DelayedText text={t("正在读取档案…")} /></Empty>;
   const a = profile.assistant;
+  const shownSprite = previewSprite ?? a.sprite;
 
   return (
     <>
       <div className="pgroup">
         <div className="bigav">
-          <Avatar sprite={a.sprite} prop={a.prop} size={96} motion="home" onClick={() => setPicking((v) => !v)} title={t("更换头像")} />
+          <Avatar
+            sprite={shownSprite}
+            prop={a.prop}
+            size={112}
+            free
+            live
+            interactive
+            follow
+            glow={picking}
+            morphBounce
+            action={petAct.action}
+            actionSeq={petAct.seq}
+            onClick={() => setPicking((v) => !v)}
+            title={t("更换头像")}
+          />
         </div>
         <div className="avatar-hint">{t("点击头像更换")}</div>
-        {picking ? <SpritePicker aid={aid} sprite={a.sprite} prop={a.prop} onDone={() => setPicking(false)} /> : null}
+        {picking ? (
+          <SpritePicker
+            aid={aid}
+            sprite={shownSprite}
+            onPreview={setPreviewSprite}
+            onAction={(action) => setPetAct((prev) => ({ action, seq: prev.seq + 1 }))}
+            onDone={() => setPicking(false)}
+          />
+        ) : null}
 
         <PanelSaveStatus message={feedback.message} />
         <div className="sech"><span>{t("基本信息")}</span></div>

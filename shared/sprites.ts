@@ -4,6 +4,7 @@
 // 旧数据里的 page、server、bird 这些 id 就是道具 id，不用迁移。
 
 import type { CustomProp } from "./types.ts";
+import { distinctPetSprite, parsePetDirect } from "./pet.ts";
 
 /** 12×12 的火苗（主助手 Hob 就是它，应用图标也是）。k 描边，o 外焰，y 内焰，e 眼睛。 */
 export const FLAME = [
@@ -622,10 +623,13 @@ export function spriteEyes(art: { rows: string[] }): { body: string[]; eyes: [nu
   return { body, eyes };
 }
 
-/** 新建助手时：已有助手用着同一个头像就换成这件道具还没人用的颜色（橙色留给 Hob）；自画的图案各不相同，不算撞。 */
+/** 新建助手时：已有助手用着同一个头像就换成还没人用的颜色；同时兼容新宠物造型与老像素道具。 */
 export function distinctSprite(sprite: string, taken: string[]): string {
   const want = parseSprite(sprite);
-  if (!want || want.prop === "custom") return sprite;
+  if (!want) {
+    return parsePetDirect(sprite) ? distinctPetSprite(sprite, taken) : sprite;
+  }
+  if (want.prop === "custom") return sprite;
   const key = (s: string) => {
     const p = parseSprite(s);
     return p ? `${p.prop}:${p.color}` : s;

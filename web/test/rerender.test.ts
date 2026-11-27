@@ -17,7 +17,7 @@ const BROWSER_TEST_TIMEOUT = 90_000;
 beforeAll(async () => {
   server = await createServer({ server: { port: 0, host: "127.0.0.1" } });
   await server.listen();
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: "zh-CN" });
   // 全仓库并行时浏览器和约 155 个 Vitest worker 竞争 CPU，模块渲染可能超过 15 秒。
   page.setDefaultTimeout(60_000);
@@ -28,7 +28,7 @@ afterAll(async () => { await browser?.close(); await server?.close(); });
 async function fixture() {
   const address = server.httpServer!.address();
   if (!address || typeof address === "string") throw new Error("测试服务器没有端口");
-  await page.goto(`http://127.0.0.1:${address.port}/test/rerender-fixture.html?mock=1&scene=g-mobile`);
+  await page.goto(`http://127.0.0.1:${address.port}/test/rerender-fixture.html?mock=1&scene=boot`);
   await page.waitForFunction(() => (window as unknown as Probe).__renders.home >= 1);
 }
 
@@ -51,7 +51,7 @@ describe("首页只订阅自己用的那几项", () => {
 
   it("手机上从群返回列表：首页不重画", async () => {
     await fixture();
-    expect(await where()).toEqual({ mobile: "chat", gsel: "g-home" });
+    expect(await where()).toEqual({ mobile: "chat", gsel: "g1" });
     expect((await renders()).home).toBe(1); // 只是挂载那一次
     await go("back"); // 关群对话回话题列表，再回首页
     expect(await where()).toEqual({ mobile: "list", gsel: null });

@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
@@ -67,17 +66,13 @@ describe("谁能用哪些技能", () => {
 
   it("Lore 和本机 ~/.agents 的只读，带来源；同名时排在通用技能后面", () => {
     const hob = makeHob({}, { memory: "lore" });
-    const previous = process.env.HOME;
-    const temp = join(hob.home, "fake-home");
     try {
-      const local = join(temp, ".agents", "skills", "local-only");
+      const local = join(hob.runtime.userHome, ".agents", "skills", "local-only");
       mkdirSync(local, { recursive: true });
       writeFileSync(join(local, "SKILL.md"), "---\nname: local-only\ndescription: 本机别的工具也用\n---\n正文\n");
       const lore = join(hob.home, "lore-skills");
       mkdirSync(join(lore, "shared"), { recursive: true });
       writeFileSync(join(lore, "shared", "SKILL.md"), "---\nname: shared\ndescription: Lore 里的同名技能\n---\n正文\n");
-      process.env.HOME = temp;
-      expect(homedir()).toBe(temp);
       saveSkill(generalSkillsDir(hob.home), { name: "shared", title: "通用的", description: "Hob 的", content: "步骤" });
       hob.runtime.pi.loreSkillPaths = [lore];
       const skills = visibleSkills(hob.runtime, "hob");
@@ -86,7 +81,6 @@ describe("谁能用哪些技能", () => {
       // Lore 的同名那份被 Hob 的盖住，不出现
       expect(skills.filter((skill) => skill.name === "shared")).toHaveLength(1);
     } finally {
-      if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
       hob.close();
     }
   });
@@ -173,13 +167,10 @@ describe("通用技能和别的两档一样能改", () => {
 
   it("只读的两类：改、删、into 填了它都照实说是哪来的", async () => {
     const hob = makeHob({}, { memory: "lore" });
-    const previous = process.env.HOME;
-    const temp = join(hob.home, "fake-home");
     try {
-      const local = join(temp, ".agents", "skills", "local-only");
+      const local = join(hob.runtime.userHome, ".agents", "skills", "local-only");
       mkdirSync(local, { recursive: true });
       writeFileSync(join(local, "SKILL.md"), "---\nname: local-only\ndescription: 本机别的工具也用\n---\n正文\n");
-      process.env.HOME = temp;
       const tools = buildRouterTools(hob.runtime, "hob");
       const edit = tools.find((tool) => tool.name === "save_skill")!;
       const remove = tools.find((tool) => tool.name === "delete_skill")!;
@@ -195,7 +186,6 @@ describe("通用技能和别的两档一样能改", () => {
       const loreResult = await edit.execute("e2", { name: "lore-only", edits: [{ old: "正文", new: "新" }] });
       expect(loreResult.content[0].text).toBe("lore-only 是只读的技能，不能改；换个名字另存一份。");
     } finally {
-      if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
       hob.close();
     }
   });
@@ -336,20 +326,16 @@ describe("设置 → 技能", () => {
 
   it("技能列表按 Hob、Lore、本机三档，同名时 Hob 的优先", () => {
     const hob = makeHob({}, { memory: "off" });
-    const previous = process.env.HOME;
-    const temp = join(hob.home, "fake-home");
     try {
-      process.env.HOME = temp;
       saveSkill(generalSkillsDir(hob.home), { ...hobSkill, name: "shared", content: "Hob 的" });
-      for (const [root, name, description] of [[join(temp, ".agents", "skills"), "shared", "本机的"], [join(temp, ".agents", "skills"), "local-only", "本机独有"]] as const) {
+      for (const [root, name, description] of [[join(hob.runtime.userHome, ".agents", "skills"), "shared", "本机的"], [join(hob.runtime.userHome, ".agents", "skills"), "local-only", "本机独有"]] as const) {
         mkdirSync(join(root, name), { recursive: true });
         writeFileSync(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n正文\n`);
       }
-      const view = skillViews(hob.home, [], []);
+      const view = skillViews(hob.home, [], [], hob.runtime.userHome);
       expect(view.filter((skill) => skill.name === "shared").map((skill) => `${skill.source}:${skill.overridden}`)).toEqual(["hob:false", "common:true"]);
       expect(view.filter((skill) => skill.name === "local-only").map((skill) => `${skill.source}:${skill.overridden}`)).toEqual(["common:false"]);
     } finally {
-      if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
       hob.close();
     }
   });

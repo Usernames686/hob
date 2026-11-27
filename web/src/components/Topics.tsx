@@ -6,13 +6,13 @@ import { DialogShell } from "./DialogShell.tsx";
 import type { GroupSummary, Job } from "../../../shared/types.ts";
 import { Icon } from "../icons.tsx";
 import { Avatar } from "../sprites.tsx";
-import { closeTopic, goHome, leaveTopicList, openGroupHome, openJob, openKnowledge, openSettings, openTopic, reopenTopic, selectGroup, toggleSideCollapsed, useApp } from "../store.ts";
+import { closeTopic, goHome, leaveTopicList, openGroupHome, openJob, openTopic, reopenTopic, selectGroup, toggleSideCollapsed, useApp } from "../store.ts";
 import { fmtElapsed, fmtList } from "../util.ts";
 import { JOB_STATUS } from "./status-meta.tsx";
 import { ownerGroup, topicFace, topicGroups, topicPreview } from "../topics.ts";
 import { GroupCluster, groupPreview } from "./Groups.tsx";
 import { todoStamp } from "./status-meta.tsx";
-import { UpdateDot, availableVersion } from "./SettingsParts.tsx";
+import { SideFoot } from "./Sidebar.tsx";
 
 /** 群头部第二行：几个成员。 */
 export function membersLine(g: GroupSummary): string {
@@ -36,7 +36,7 @@ export function GeneralRow({ g, sel, onClick }: { g: GroupSummary; sel?: boolean
           <span className="nm">{t("综合")}</span>
           <span className="tm">{fmtList(g.last?.at)}</span>
         </div>
-        <div className="pv">{groupPreview(g, s.assistants)}</div>
+        <div className="pv"><span className="topic-preview">{groupPreview(g, s.assistants)}</span></div>
       </div>
       <Unread g={g} />
     </button>
@@ -94,7 +94,6 @@ export function GroupSidebar({ groupId }: { groupId?: string }) {
   const [showAllClosed, setShowAllClosed] = useState(false);
   if (!g) return null;
   const groups = topicGroups(s.groups, g.id);
-  const updateVersion = availableVersion(s.update);
 
   return (
     <aside className="side gside">
@@ -119,19 +118,7 @@ export function GroupSidebar({ groupId }: { groupId?: string }) {
         {groups.closed.length ? <div className="gt"><span>{t("已关闭 {n}", { n: groups.closed.length })}</span></div> : null}
         <ClosedRows list={groups.closed} showAll={showAllClosed} onMore={() => setShowAllClosed(true)} />
       </div>
-      <div className="side-foot">
-        <button className="frow" onClick={openKnowledge}>
-          <Icon name="archive" size={18} />
-          <span className="sp">{t("知识库")}</span>
-        </button>
-        <button className="frow" onClick={openSettings}>
-          <Icon name="gear" size={18} />
-          <span className="sp">
-            {t("设置")}
-            {updateVersion ? <UpdateDot version={updateVersion} /> : null}
-          </span>
-        </button>
-      </div>
+      <SideFoot />
       {creating ? <NewTopicDialog group={g} onClose={() => setCreating(false)} /> : null}
     </aside>
   );

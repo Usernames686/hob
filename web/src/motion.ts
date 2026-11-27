@@ -48,7 +48,7 @@ export function useLeave(show: boolean, ms = 180): { mounted: boolean; leaving: 
     const t = window.setTimeout(() => setMounted(false), ms);
     return () => window.clearTimeout(t);
   }, [show, ms]);
-  return { mounted, leaving: mounted && !show };
+  return { mounted: show || mounted, leaving: mounted && !show };
 }
 
 export interface Row<T> {

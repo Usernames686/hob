@@ -589,6 +589,16 @@ export interface Assistant {
   splitFrom?: { from: string; at: Iso; readonly conversations?: number }; // conversations 仅供读取旧数据
 }
 
+export interface CreateAssistantBody {
+  name: string;
+  duty?: string;
+  dutyLong?: string;
+  instructions?: string;
+  sprite?: string;
+  cwd?: string;
+  abilities?: Partial<NonNullable<Assistant["abilities"]>>;
+}
+
 export type RouterActivity = { state: "thinking" | "tool"; label: string };
 
 export interface AssistantSummary extends Assistant {
@@ -606,7 +616,7 @@ export interface AssistantSummary extends Assistant {
  * 话题是挂在群下面的群（有 parentId）：一件事一条时间线，成员在每个话题里各有一份会话；
  * 群自己的那条时间线就是「综合」。话题的成员、群主、负责什么都取所属的群。
  */
-export type GroupReplyMode = "owner" | "all";
+export type GroupReplyMode = "owner" | "all" | "auto";
 
 export interface Group {
   id: string; // "g-" + 短 id；话题也是
@@ -614,7 +624,7 @@ export interface Group {
   purpose: string; // 负责什么，一句话
   ownerId: string; // 群主，必须在 members 里
   members: string[]; // assistantId，含群主，顺序就是成员列表的顺序
-  /** 用户没点名的消息谁来回应：缺省为 owner（群主回应）；all 为全员依次回应。群和话题各自一份。 */
+  /** 用户没点名时：owner 群主回应（默认），auto 自动选人，all 全员依次回应。群和话题各自一份。 */
   replyMode?: GroupReplyMode;
   models?: { conversation?: ModelPick; work?: ModelPick }; // 本群模型默认值
   memberModels?: Record<string, { conversation?: ModelPick; work?: ModelPick }>; // 各成员在本群的模型覆盖
@@ -638,6 +648,7 @@ export interface TopicHandover {
   by: string; // 交给群的主助手
   at: Iso;
   result?: string; // 关话题时送回给主助手的那句话
+  resultFiles?: string[]; // 话题关闭时已交付的文件，和结论一起补送
   deliveredAt?: Iso; // 送到主助手的对话的时间；没有就是还没送到
 }
 
@@ -662,6 +673,19 @@ export interface GroupProfile {
   memberModels: Record<string, Record<"conversation" | "work", GroupMemberModel>>;
 }
 
+export interface GroupArtifactMeta {
+  name: string;
+  title: string;
+  updatedBy: string;
+  updatedAt: Iso;
+  version: number;
+  size: number;
+}
+
+export interface GroupArtifact extends GroupArtifactMeta {
+  content: string;
+}
+
 /** 左栏里的一行群，或者群里的一个话题。 */
 export interface GroupSummary extends Group {
   last?: { at: Iso; speaker: string | "user"; text: string }; // 左栏预览「服务器：…」
@@ -670,6 +694,8 @@ export interface GroupSummary extends Group {
   todos?: TodoItem[]; // 这个会话（综合、话题）的待办，按做的先后
   suggestions?: string[]; // 最近一轮生成的推荐提问，进程内保存
   activity?: Record<string, RouterActivity>; // 正在说话的成员现在在做什么：页面刚打开时用，之后跟 group-activity 事件
+  queue?: { pending: string[]; paused?: boolean };
+  artifactCount?: number;
 }
 
 /**
@@ -748,6 +774,7 @@ export interface Delegation {
   from: string;
   to: string;
   text: string;
+  files?: string[];
   createdAt: Iso;
   status: "running" | "waiting" | "done" | "stuck" | "interrupted" | "returned" | "takenOver";
   jobIds: string[];
@@ -1009,12 +1036,12 @@ export interface Draft {
   createdAt: Iso;
 }
 
-export type NoteIcon = "memory" | "rule" | "routine" | "split" | "info" | "skill";
+export type NoteIcon = "memory" | "rule" | "routine" | "split" | "info" | "skill" | "artifact";
 
 export type Item = (
   | { kind: "user"; id: string; at: Iso; text: string; quote?: { itemId: string; text: string }; files?: string[]; from?: { assistantId: string; name: string; delegationId: string }; reactions?: { by: string; emoji: string }[] }
   | { kind: "assistant"; id: string; at: Iso; text: string; streaming?: boolean; routine?: { id: string; name: string; jobId?: string }; quote?: { itemId: string; text: string } }
-  | { kind: "note"; id: string; at: Iso; icon: NoteIcon; text: string; request?: string; routineId?: string; handbackId?: string; path?: string; targetGroupId?: string; detail?: string } // request：定时任务到点时交给群主的全文，界面不显示，转进话题、派任务时带上 // path：点了预览这个文件（如技能的 SKILL.md） // detail：点开才看的原因（工具报错的原文） // 居中灰色一行，如 "记忆已更新 · 不看融资新闻"
+  | { kind: "note"; id: string; at: Iso; icon: NoteIcon; text: string; request?: string; routineId?: string; handbackId?: string; path?: string; targetGroupId?: string; detail?: string; artifact?: { groupId: string; name: string } } // request：定时任务到点时交给群主的全文，界面不显示，转进话题、派任务时带上 // path：点了预览这个文件（如技能的 SKILL.md） // detail：点开才看的原因（工具报错的原文） // 居中灰色一行，如 "记忆已更新 · 不看融资新闻"
   | { kind: "todos"; id: string; at: Iso; items: TodoItem[]; why: TodoArchiveWhy } // 老数据：以前收起的一份待办。现在不再写入，界面不显示（对话里只放用户需要看的东西）
   | { kind: "question"; id: string; at: Iso; approvalId: string }
   | { kind: "job"; id: string; at: Iso; jobId: string; round?: number } // 第几轮（续做一次 +1），缺省是第 0 轮
@@ -1107,6 +1134,37 @@ export interface MemoryConfig {
 export type LoreTestResult =
   | { ok: true; baseUrl: string }
   | { ok: false; reason: "invalid_url" | "insecure_http" | "missing_token" | "unauthorized" | "unreachable" };
+
+/** 本地记忆（MEMORY.md / daily）中的一条记录。 */
+export interface LocalMemoryEntry {
+  id: string;
+  text: string;
+  updatedAt?: string;
+  source?: string;
+}
+
+/** 本地备忘清单（SCRATCHPAD.md）中的一项。 */
+export interface ScratchpadEntry {
+  id: string;
+  text: string;
+  done: boolean;
+  updatedAt?: string;
+}
+
+/** GET /api/memory/entries 及所有本地记忆写操作返回的当前视图。 */
+export interface LocalMemoryView {
+  longTerm: LocalMemoryEntry[];
+  scratchpad: ScratchpadEntry[];
+  dailyDates: string[];
+  dailyDate?: string;
+  daily: LocalMemoryEntry[];
+}
+
+/** 对话导出为 Markdown 的接口响应。 */
+export interface ExportedMarkdown {
+  filename: string;
+  content: string;
+}
 
 export type Theme = "system" | "light" | "dark";
 
@@ -1359,6 +1417,12 @@ export interface Bootstrap {
   update?: UpdateCheck;
 }
 
+export interface RewindResult {
+  ok: true;
+  removedCount: number;
+  restoredText?: string;
+}
+
 export type HobEvent =
   | { type: "stars" }
   | { type: "rules" }
@@ -1369,6 +1433,8 @@ export type HobEvent =
   | { type: "assistant_removed"; id: string }
   | { type: "group"; group: GroupSummary } // 新建或变化
   | { type: "group_removed"; id: string }
+  | { type: "group-artifacts"; groupId: string }
+  | { type: "conversation-rewound"; target: "group" | "assistant"; id: string }
   | { type: "group-item"; groupId: string; item: GroupItem } // 新条目，或按 id 替换
   | { type: "group-delta"; groupId: string; itemId: string; text: string } // 流式追加
   | { type: "group-activity"; groupId: string; speaker: string; activity: RouterActivity | null }

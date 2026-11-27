@@ -1,3 +1,4 @@
+import { assistantAbilities } from "../../shared/assistant-create.ts";
 // 模型名单：从引擎的模型注册表拿可用的聊天模型，解析每个角色 / 每个任务用哪个模型。
 import type { Model } from "@earendil-works/pi-ai";
 import type {
@@ -215,7 +216,11 @@ export function conversationPick(settings: ModelSettings, assistant: Assistant):
 
 /** 推荐提问这一轮使用的模型：null 关闭，缺省跟随这个助手的对话模型，思考固定关闭。 */
 export function followUpPick(settings: ModelSettings, assistant: Assistant, catalog: ModelCatalog): ModelPick | undefined {
-  if (settings.suggest === null) return undefined;
+  return settings.suggest === null ? undefined : lightweightPick(settings, assistant, catalog);
+}
+
+/** 推荐提问和群选人共用轻量模型，未指定时使用该会话的模型。 */
+export function lightweightPick(settings: ModelSettings, assistant: Assistant, catalog: ModelCatalog): ModelPick | undefined {
   let pick: ModelPick;
   try {
     pick = settings.suggest ?? conversationPick(settings, assistant);
@@ -375,7 +380,7 @@ export async function checkModelsPatch(
  * models.allowed 为空数组 = 名单全部，等于没限制。
  */
 export function checkAssistantModels(
-  raw: { models?: Assistant["models"]; abilities?: Assistant["abilities"] },
+  raw: { models?: Assistant["models"]; abilities?: Partial<NonNullable<Assistant["abilities"]>> },
   roster: RosterEntry[],
   catalog: ModelCatalog,
 ): { models?: Assistant["models"]; abilities?: Assistant["abilities"] } {
@@ -401,12 +406,6 @@ export function checkAssistantModels(
     }
     out.models = models;
   }
-  if (raw.abilities) {
-    out.abilities = {
-      exec: raw.abilities.exec !== false,
-      write: raw.abilities.write !== false,
-      image: raw.abilities.image !== false,
-    };
-  }
+  if (raw.abilities !== undefined) out.abilities = assistantAbilities(raw.abilities);
   return out;
 }

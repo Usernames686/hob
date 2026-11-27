@@ -88,7 +88,7 @@ describe("展示页面", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("content-security-policy")).toBe("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox");
       expect(response.headers.get("content-disposition")).toMatch(/^inline;/);
-      const outside = await app.request(`/api/files?path=${encodeURIComponent("/etc/hostname")}`, { headers: { cookie } });
+      const outside = await app.request(`/api/files?path=${encodeURIComponent(import.meta.filename)}`, { headers: { cookie } });
       expect(outside.status).toBe(403);
     } finally { hob.close(); }
   });

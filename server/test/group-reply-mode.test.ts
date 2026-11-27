@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { buildAdminTools } from "../src/admin-tools.ts";
 import { MAX_WAVE_TURNS } from "../src/groups.ts";
-import { buildSystemPrompt, GROUP_ALL_REPLY_LINE, GROUP_NO_REPLY_LINE, groupPromptLine } from "../src/prompt.ts";
+import { buildSystemPrompt, GROUP_ALL_REPLY_LINE, GROUP_AUTO_REPLY_LINE, GROUP_NO_REPLY_LINE, groupPromptLine } from "../src/prompt.ts";
 import { makeHob, text, waitFor } from "./helpers.ts";
 
 function addMember(hob: ReturnType<typeof makeHob>, id: string, name: string, duty = `${name}视角`) {
@@ -291,7 +291,7 @@ describe("群和话题的「全员回应」（replyMode）", () => {
       expect(hob.runtime.store.group(group.id)?.replyMode).toBe("owner");
 
       // 话题非法 replyMode 报错
-      expect(() => hob.runtime.groups.update(topic2.id, { replyMode: "nobody" })).toThrow("owner 或 all");
+      expect(() => hob.runtime.groups.update(topic2.id, { replyMode: "nobody" })).toThrow("owner、all 或 auto");
     } finally {
       hob.close();
     }
@@ -304,7 +304,7 @@ describe("群和话题的「全员回应」（replyMode）", () => {
       const tools = buildAdminTools(hob.runtime, "hob");
       const createGroup = tools.find((tool) => tool.name === "create_group")!;
       const updateGroup = tools.find((tool) => tool.name === "update_group")!;
-      const expectedDesc = "用户没点名的消息谁来回应：owner 群主回应（默认），all 全员回应，群主先回，其他成员依次轮到。";
+      const expectedDesc = "用户没点名的消息谁来回应：owner 群主回应（默认），auto 自动选人（由轻量模型判断最合适的成员，拿不准时回退群主），all 全员回应，群主先回，其他成员依次轮到。";
       expect((createGroup.parameters as any).properties.replyMode.description).toBe(expectedDesc);
       expect((updateGroup.parameters as any).properties.replyMode.description).toBe(expectedDesc);
 
@@ -317,7 +317,7 @@ describe("群和话题的「全员回应」（replyMode）", () => {
         replyMode: "everyone",
       }, undefined, undefined, undefined as never);
       expect((badCreate as { isError?: boolean }).isError).toBe(true);
-      expect((badCreate.content[0] as { text: string }).text).toContain("owner 或 all");
+      expect((badCreate.content[0] as { text: string }).text).toContain("owner、all 或 auto");
 
       // 合法创建
       const okCreate = await createGroup.execute("c2", {
@@ -334,13 +334,29 @@ describe("群和话题的「全员回应」（replyMode）", () => {
       // update_group 非法值报错
       const badUpdate = await updateGroup.execute("u1", { groupId: created.id, replyMode: "invalid" }, undefined, undefined, undefined as never);
       expect((badUpdate as { isError?: boolean }).isError).toBe(true);
-      expect((badUpdate.content[0] as { text: string }).text).toContain("owner 或 all");
+      expect((badUpdate.content[0] as { text: string }).text).toContain("owner、all 或 auto");
 
       // update_group 合法修改，changes 里写「回应方式」
       const okUpdate = await updateGroup.execute("u2", { groupId: created.id, replyMode: "owner" }, undefined, undefined, undefined as never);
       expect((okUpdate as { isError?: boolean }).isError).toBeUndefined();
       expect((okUpdate.content[0] as { text: string }).text).toBe("已修改群「评审团」：回应方式。");
       expect(hob.runtime.store.group(created.id)?.replyMode).toBe("owner");
+
+      await updateGroup.execute("u3", { groupId: created.id, replyMode: "auto" }, undefined, undefined, undefined as never);
+      expect(hob.runtime.store.group(created.id)?.replyMode).toBe("auto");
+      expect(hob.runtime.store.groupItems(created.id).some((item) => item.kind === "note" && item.text.includes("把回应方式改成自动选人"))).toBe(true);
+      const autoCreate = await createGroup.execute("c3", {
+        name: "自动群", purpose: "协作", members: ["hob", "m1"], ownerId: "hob", replyMode: "auto",
+      }, undefined, undefined, undefined as never);
+      expect((autoCreate as { isError?: boolean }).isError).toBeUndefined();
+      const autoGroup = hob.runtime.store.groups().find((group) => group.name === "自动群")!;
+      expect(autoGroup.replyMode).toBe("auto");
+      const topic = hob.runtime.groups.createTopic(autoGroup.id, "分工", "user");
+      expect(topic.replyMode).toBe("auto");
+      hob.runtime.groups.update(autoGroup.id, { replyMode: "all" });
+      expect(hob.runtime.store.group(topic.id)?.replyMode).toBe("auto");
+      hob.runtime.groups.update(topic.id, { replyMode: "owner" });
+      expect(hob.runtime.store.group(topic.id)?.replyMode).toBe("owner");
     } finally {
       hob.close();
     }
@@ -358,27 +374,39 @@ describe("群和话题的「全员回应」（replyMode）", () => {
       hob.runtime.groups.update(ownerTopicInAllGroup.id, { replyMode: "owner" });
 
       const base = { timezone: "Asia/Shanghai", aboutYou: { name: "", language: "", notes: "" }, memory: "off" as const };
-      const verbatim = "这个群设成了全员回应：用户没点名的消息，群主先回，其他成员按成员顺序依次轮到，前面的人说过什么你都看得到。";
+      const verbatim = "这个群设成了全员回应：用户希望每位成员都参与回应。用户没点名的消息，群主先回，其他成员按成员顺序依次轮到，前面的人说过什么你都看得到。轮到你时，请站在你的职责和视角直接回应用户（哪怕是打招呼、表态或简短补充自己的关注点），不要轻易回 NO_REPLY；只有当这件事与你的职责完全无关且确实没有任何需要表达的内容时，才回 NO_REPLY。";
       expect(GROUP_ALL_REPLY_LINE).toBe(verbatim);
 
-      // 全员回应群：群主和普通成员都紧接在 groupPromptLine 后面
+      // 全员回应群：群主和普通成员都紧接在 groupPromptLine 后面，不再套用激进的 GROUP_NO_REPLY_LINE
       for (const member of ["hob", "m1"]) {
         const prompt = buildSystemPrompt(hob.runtime.store, member, { ...base, group: hob.runtime.store.group(allGroup.id)! });
-        expect(prompt).toContain(`${groupPromptLine(hob.runtime.store, allGroup)}\n\n${GROUP_NO_REPLY_LINE}\n\n${verbatim}`);
+        expect(prompt).toContain(`${groupPromptLine(hob.runtime.store, allGroup, true)}\n\n${verbatim}`);
+        expect(prompt).not.toContain(GROUP_NO_REPLY_LINE);
       }
 
-      // 群主回应群：不含
+      // 群主回应群：不含全员提示，保留默认不重复规则
       for (const member of ["hob", "m1"]) {
         const prompt = buildSystemPrompt(hob.runtime.store, member, { ...base, group: hob.runtime.store.group(ownerGroup.id)! });
+        expect(prompt).toContain(GROUP_NO_REPLY_LINE);
         expect(prompt).not.toContain(verbatim);
       }
 
       // 话题各自按自己的 replyMode 判断
       const topicAllPrompt = buildSystemPrompt(hob.runtime.store, "m1", { ...base, group: hob.runtime.store.group(allTopicInOwnerGroup.id)! });
-      expect(topicAllPrompt).toContain(`${groupPromptLine(hob.runtime.store, ownerGroup)}\n\n${GROUP_NO_REPLY_LINE}\n\n${verbatim}`);
+      expect(topicAllPrompt).toContain(`${groupPromptLine(hob.runtime.store, ownerGroup, true)}\n\n${verbatim}`);
+      expect(topicAllPrompt).not.toContain(GROUP_NO_REPLY_LINE);
 
       const topicOwnerPrompt = buildSystemPrompt(hob.runtime.store, "m1", { ...base, group: hob.runtime.store.group(ownerTopicInAllGroup.id)! });
+      expect(topicOwnerPrompt).toContain(GROUP_NO_REPLY_LINE);
       expect(topicOwnerPrompt).not.toContain(verbatim);
+
+      hob.runtime.groups.update(ownerTopicInAllGroup.id, { replyMode: "auto" });
+      for (const member of ["hob", "m1"]) {
+        const prompt = buildSystemPrompt(hob.runtime.store, member, { ...base, group: hob.runtime.store.group(ownerTopicInAllGroup.id)! });
+        expect(prompt).toContain(GROUP_AUTO_REPLY_LINE);
+        expect(prompt).toContain("write_artifact 和 read_artifact");
+        expect(prompt).not.toContain(GROUP_ALL_REPLY_LINE);
+      }
     } finally {
       hob.close();
     }

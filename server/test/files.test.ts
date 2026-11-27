@@ -33,7 +33,7 @@ describe("GET /api/files 的安全规则", () => {
       const work = join(hob.home, "assistants", "hob", "jobs", "t-aaaa", "work");
       mkdirSync(work, { recursive: true });
       // 指向数据目录外的链接：解开 realpath 后不在 HOB_HOME 里
-      symlinkSync(join(tmpdir(), "..", "etc", "hostname"), join(work, "escape"));
+      symlinkSync(import.meta.filename, join(work, "escape"));
       const outside = await app.request(`/api/files?path=${encodeURIComponent(join(work, "escape"))}`, { headers: { cookie } });
       expect(outside.status).toBe(403);
 

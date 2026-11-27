@@ -14,20 +14,24 @@ function Highlight({ text, query }: { text: string; query: string }) {
 export function HistoryResults() {
   const s = useApp();
   const query = s.query.trim();
+  const len = [...query].length;
   const [result, setResult] = useState<{ query: string; rows: HistoryMatch[]; error?: string } | null>(null);
   useEffect(() => {
-    if ([...query].length < 2) return;
+    if (len < 2) return;
     let live = true;
     const timer = window.setTimeout(() => {
       void searchHistory(query).then((data) => { if (live) setResult({ query, rows: data.results }); }).catch((error: unknown) => { if (live) setResult({ query, rows: [], error: error instanceof Error ? error.message : String(error) }); });
     }, 300);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [query]);
-  if ([...query].length < 2) return null;
+  }, [query, len]);
+  if (len === 0) return null;
+  if (len < 2) {
+    return <section className="history-results"><div className="history-heading">{t("消息")}</div><p>{t("至少输入 2 个字搜索历史消息")}</p></section>;
+  }
   const current = result?.query === query ? result : null;
   const rows = current ? [...current.rows].sort((a, b) => Number(b.starred) - Number(a.starred) || b.at.localeCompare(a.at)) : [];
   return <section className="history-results"><div className="history-heading">{t("消息")}</div>
-    {current?.error ? <p>{t("搜索失败：{error}", { error: current.error })}</p> : current && !rows.length ? <p>{t("没有找到包含「{query}」的消息", { query })}</p> : null}
+    {!current ? <p>{t("正在搜索…")}</p> : current.error ? <p>{t("搜索失败：{error}", { error: current.error })}</p> : !rows.length ? <p>{t("没有找到包含「{query}」的消息", { query })}</p> : null}
     {rows.map((row) => {
       const group = row.conversation.kind === "group" ? s.groups.find((g) => g.id === row.conversation.id) : undefined;
       const assistant = s.assistants.find((a) => a.id === (group?.ownerId ?? row.conversation.id));

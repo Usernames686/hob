@@ -1,5 +1,6 @@
 // 左上「+」的菜单（新建助手 / 建群）和建群对话框。
 import { Select } from "./Select.tsx";
+import { NewAssistantDialog } from "./AssistantCreate.tsx";
 import { DialogShell } from "./DialogShell.tsx";
 import { useState } from "react";
 import { createPortal } from "react-dom";
@@ -7,13 +8,13 @@ import type { AssistantSummary, Group } from "../../../shared/types.ts";
 import { useMenu } from "./use-menu.ts";
 import { Icon } from "../icons.tsx";
 import { Avatar } from "../sprites.tsx";
-import { createGroup, newAssistant, useApp } from "../store.ts";
+import { createGroup, useApp } from "../store.ts";
 import { t } from "../../../shared/i18n.ts";
 
 /** 左上角的「+」：新建助手或建群。 */
 export function PlusButton({ size = 18 }: { size?: number }) {
   const menu = useMenu();
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<"assistant" | "group" | null>(null);
   return (
     <>
       <button
@@ -27,12 +28,13 @@ export function PlusButton({ size = 18 }: { size?: number }) {
       </button>
       {menu.menu ? createPortal(
         <div className="amenu" ref={menu.box} role="menu">
-          <button role="menuitem" onClick={() => { menu.close(); newAssistant(); }}>{t("新建助手")}</button>
-          <button role="menuitem" onClick={() => { menu.close(); setCreating(true); }}>{t("建群")}</button>
+          <button role="menuitem" onClick={() => { menu.close(); setCreating("assistant"); }}>{t("新建助手")}</button>
+          <button role="menuitem" onClick={() => { menu.close(); setCreating("group"); }}>{t("建群")}</button>
         </div>,
         document.body,
       ) : null}
-      {creating ? <NewGroupDialog onClose={() => setCreating(false)} /> : null}
+      {creating === "assistant" && <NewAssistantDialog onClose={() => setCreating(null)} />}
+      {creating === "group" && <NewGroupDialog onClose={() => setCreating(null)} />}
     </>
   );
 }
@@ -121,6 +123,12 @@ export function NewGroupDialog({ onClose }: { onClose: () => void }) {
 
   const clone = (gid: string) => {
     setFrom(gid);
+    if (!gid) {
+      setMembers([]);
+      setOwnerId("");
+      setError(null);
+      return;
+    }
     const group = s.groups.find((g) => g.id === gid);
     if (!group) return;
     const picked = membersOfGroup(group);

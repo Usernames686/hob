@@ -29,7 +29,7 @@ import type {
   UsagePricePatch,
   UsagePriceSaved,
 } from "../../shared/types.ts";
-import { answerApproval, answerCard, archiveAssistant, retirePluginCards, createFromDraft, dismissDraft, updateAssistant } from "./actions.ts";
+import { answerApproval, answerCard, archiveAssistant, retirePluginCards, createAssistant, createFromDraft, dismissDraft, updateAssistant } from "./actions.ts";
 import { setPassword, assistantFilesDir, cacheDir } from "./config.ts";
 import { newId } from "./ids.ts";
 import { claudeStatus } from "./claude-status.ts";
@@ -59,6 +59,22 @@ import type { SkillImportSource } from "../../shared/skills.ts";
 import { searchHistory } from "./history.ts";
 import { applyNetworkProxy } from "./network-proxy.ts";
 import { readLoginAuto, removeLoginAuto } from "./login-auto.ts";
+import { ArtifactConflictError, deleteGroupArtifact, listGroupArtifacts, readGroupArtifact, writeGroupArtifact } from "./group-artifacts.ts";
+import {
+  addLongTermMemory,
+  addScratchpadItem,
+  clearDoneScratchpad,
+  deleteDailyMemory,
+  deleteLongTermMemory,
+  deleteScratchpadItem,
+  readLocalMemory,
+  updateLongTermMemory,
+  updateScratchpadItem,
+} from "./local-memory.ts";
+import { cardHistoryLine } from "./cards.ts";
+import { deriveItems } from "./router.ts";
+import { formatConversationMarkdown, safeExportFilename } from "../../shared/export-markdown.ts";
+import { attachmentName } from "../../shared/media.ts";
 
 const COOKIE = "hob";
 const THIRTY_DAYS = 30 * 24 * 3600;
@@ -292,17 +308,17 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     let loreError: string | undefined;
     try { if (memory.provider === "lore" && !runtime.pi.loreSkillPaths.length) await runtime.pi.discoverLoreSkills(); }
     catch (error) { loreError = error instanceof Error ? error.message : String(error); }
-    return c.json({ skills: skillViews(options.home, runtime.settings.settings.skills?.disabled ?? [], memory.provider === "lore" ? runtime.pi.loreSkillPaths : []), loreActive: memory.provider === "lore", loreUrl: memory.lore.baseUrl, loreError });
+    return c.json({ skills: skillViews(options.home, runtime.settings.settings.skills?.disabled ?? [], memory.provider === "lore" ? runtime.pi.loreSkillPaths : [], runtime.userHome), loreActive: memory.provider === "lore", loreUrl: memory.lore.baseUrl, loreError });
   });
   app.get("/api/skills/import/:source", (c) => {
-    try { return c.json(listImportSkills(options.home, c.req.param("source") as SkillImportSource)); }
+    try { return c.json(listImportSkills(options.home, c.req.param("source") as SkillImportSource, runtime.userHome)); }
     catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
   });
   app.post("/api/skills/import/:source", async (c) => {
     const body = await c.req.json().catch(() => ({})) as { ids?: unknown; overwrite?: unknown };
     if (!Array.isArray(body.ids) || !body.ids.every((id) => typeof id === "string") || typeof body.overwrite !== "boolean") return c.json({ error: "导入参数无效" }, 400);
     try {
-      const result = importSkills(options.home, c.req.param("source") as SkillImportSource, body.ids, body.overwrite);
+      const result = importSkills(options.home, c.req.param("source") as SkillImportSource, body.ids, body.overwrite, runtime.userHome);
       // 通用技能变了：所有助手看得到的清单都变了
       if (result.imported.length) bus.emit({ type: "skills", assistantId: "hob" });
       return c.json(result);
@@ -934,6 +950,96 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     return c.json(next);
   });
 
+  // 本地记忆管理（MEMORY.md / SCRATCHPAD.md / daily/YYYY-MM-DD.md）
+  app.get("/api/memory/entries", (c) => {
+    const date = c.req.query("date");
+    try {
+      return c.json(readLocalMemory(runtime.home, date || undefined));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.post("/api/memory/entries", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { target?: unknown; text?: unknown } | null;
+    const target = body?.target ?? "long_term";
+    if (target !== "long_term" && target !== "scratchpad") {
+      return c.json({ error: t("记忆类型无效") }, 400);
+    }
+    if (typeof body?.text !== "string" || !body.text.trim()) {
+      return c.json({ error: t("记忆内容不能为空") }, 400);
+    }
+    try {
+      return c.json(
+        target === "scratchpad"
+          ? addScratchpadItem(runtime.home, body.text)
+          : addLongTermMemory(runtime.home, body.text),
+      );
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.put("/api/memory/entries/:id", async (c) => {
+    const id = c.req.param("id");
+    const body = (await c.req.json().catch(() => null)) as { target?: unknown; text?: unknown; done?: unknown } | null;
+    const target = body?.target ?? "long_term";
+    if (target !== "long_term" && target !== "scratchpad") {
+      return c.json({ error: t("记忆类型无效") }, 400);
+    }
+    try {
+      if (target === "long_term") {
+        if (typeof body?.text !== "string" || !body.text.trim()) {
+          return c.json({ error: t("记忆内容不能为空") }, 400);
+        }
+        const updated = updateLongTermMemory(runtime.home, id, body.text);
+        return updated ? c.json(updated) : c.json({ error: t("记忆条目不存在，可能已被修改") }, 404);
+      }
+      const hasText = body?.text !== undefined;
+      const hasDone = body?.done !== undefined;
+      if ((!hasText && !hasDone) || (hasText && typeof body?.text !== "string") || (hasDone && typeof body?.done !== "boolean")) {
+        return c.json({ error: t("备忘更新参数无效") }, 400);
+      }
+      const updated = updateScratchpadItem(runtime.home, id, {
+        ...(hasText ? { text: body.text as string } : {}),
+        ...(hasDone ? { done: body.done as boolean } : {}),
+      });
+      return updated ? c.json(updated) : c.json({ error: t("记忆条目不存在，可能已被修改") }, 404);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.delete("/api/memory/entries/:id", (c) => {
+    const id = c.req.param("id");
+    const target = c.req.query("target") ?? "long_term";
+    const date = c.req.query("date");
+    if (target !== "long_term" && target !== "scratchpad" && target !== "daily") {
+      return c.json({ error: t("记忆类型无效") }, 400);
+    }
+    if (target === "daily" && !date) {
+      return c.json({ error: t("删除每日记录需要指定日期") }, 400);
+    }
+    try {
+      const updated = target === "long_term"
+        ? deleteLongTermMemory(runtime.home, id)
+        : target === "scratchpad"
+          ? deleteScratchpadItem(runtime.home, id)
+          : deleteDailyMemory(runtime.home, date!, id);
+      return updated ? c.json(updated) : c.json({ error: t("记忆条目不存在，可能已被修改") }, 404);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.post("/api/memory/scratchpad/clear-done", (c) => {
+    try {
+      return c.json(clearDoneScratchpad(runtime.home));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   app.get("/api/search", (c) => {
     const keys = readSecrets(options.home);
     const modelProviders = runtime.settings.settings.providers;
@@ -1224,12 +1330,89 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
   });
 
+  const formatExportTime = (iso: string): string => {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    const timeZone = runtime.settings.settings.general.timezone;
+    try {
+      return new Intl.DateTimeFormat("sv-SE", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(date);
+    } catch {
+      return iso;
+    }
+  };
+
+  const formatExportDate = (date: Date): string => {
+    const timeZone = runtime.settings.settings.general.timezone;
+    try {
+      return new Intl.DateTimeFormat("sv-SE", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+    } catch {
+      return date.toISOString().slice(0, 10);
+    }
+  };
+
   app.get("/api/assistants/:id/items", (c) => {
     const id = c.req.param("id");
     if (!store.assistant(id)) return c.json({ error: "助手不存在" }, 404);
     const limit = Number(c.req.query("limit") ?? 50);
     const before = c.req.query("before") ?? undefined;
     return c.json(router.items(id, { ...(before ? { before } : {}), limit }));
+  });
+
+  app.get("/api/assistants/:id/export", (c) => {
+    const id = c.req.param("id");
+    const assistant = store.assistant(id);
+    if (!assistant) return c.json({ error: "助手不存在" }, 404);
+    const allItems = deriveItems(router.entries(id));
+    const messages = allItems.flatMap((item) => {
+      if (item.kind === "job") {
+        const job = store.job(item.jobId);
+        if (!job) return [];
+        const body = [job.title, job.summary || job.statusReason].filter(Boolean).join("\n\n");
+        return [{
+          speaker: `${assistant.name} · ${t("任务")}`,
+          at: formatExportTime(item.at),
+          text: body,
+        }];
+      }
+      if (item.kind === "card") {
+        const card = store.card(item.cardId);
+        if (!card) return [];
+        return [{
+          speaker: assistant.name,
+          at: formatExportTime(item.at),
+          text: cardHistoryLine(card.card),
+        }];
+      }
+      if (item.kind !== "user" && item.kind !== "assistant") return [];
+      const files = item.kind === "user" && item.files?.length ? item.files.map(attachmentName) : undefined;
+      if (!item.text.trim() && !files?.length) return [];
+      const speaker = item.kind === "user" ? (item.from ? item.from.name : t("用户")) : assistant.name;
+      return [{
+        speaker,
+        at: formatExportTime(item.at),
+        text: item.text,
+        ...(item.quote?.text ? { quote: item.quote.text } : {}),
+        ...(files ? { files } : {}),
+      }];
+    });
+    const now = new Date();
+    const content = formatConversationMarkdown({
+      title: assistant.name,
+      ...(assistant.duty ? { subtitle: assistant.duty } : {}),
+      exportedAt: formatExportTime(now.toISOString()),
+      messages,
+    });
+    const filename = safeExportFilename(assistant.name, formatExportDate(now));
+    return c.json({ filename, content });
   });
 
   app.get("/api/assistants/:id/profile", (c) => {
@@ -1262,9 +1445,22 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     return c.json({ ok: true });
   });
 
+  app.post("/api/assistants/:id/rewind", async (c) => {
+    const body = await c.req.json<{ beforeItemId?: unknown } | null>().catch(() => null);
+    if (typeof body?.beforeItemId !== "string" || !body.beforeItemId.trim()) return c.json({ error: "beforeItemId 不能为空" }, 400);
+    const result = await router.rewind(c.req.param("id"), body.beforeItemId);
+    return result ? c.json(result) : c.json({ error: "条目不存在" }, 404);
+  });
+
   app.post("/api/assistants/:id/read", (c) => {
     router.read(c.req.param("id"));
     return c.json({ ok: true });
+  });
+
+  app.post("/api/assistants", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const result = await createAssistant(runtime, body);
+    return c.json(result.body as Record<string, unknown>, result.status as 201);
   });
 
   app.patch("/api/assistants/:id", async (c) => {
@@ -1477,6 +1673,115 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     return c.json(runtime.groups.items(id, { ...(before ? { before } : {}), limit }));
   });
 
+  app.get("/api/groups/:id/export", (c) => {
+    const id = c.req.param("id");
+    const group = store.group(id);
+    if (!group) return c.json({ error: "群不存在" }, 404);
+    const parent = group.parentId ? store.group(group.parentId) : undefined;
+    const allItems = runtime.groups.timeline(id);
+    const messages = allItems.flatMap((item) => {
+      if (item.kind === "job") {
+        const job = store.job(item.jobId);
+        if (!job) return [];
+        const owner = store.assistant(job.assistantId)?.name ?? job.assistantId;
+        const body = [job.title, job.summary || job.statusReason].filter(Boolean).join("\n\n");
+        return [{
+          speaker: `${owner} · ${t("任务")}`,
+          at: formatExportTime(item.at),
+          text: body,
+        }];
+      }
+      if (item.kind === "card") {
+        const card = store.card(item.cardId);
+        if (!card) return [];
+        const speaker = item.speaker === "user" ? t("用户") : (store.assistant(item.speaker)?.name ?? item.speaker);
+        return [{
+          speaker,
+          at: formatExportTime(item.at),
+          text: cardHistoryLine(card.card),
+        }];
+      }
+      if (item.kind !== "user" && item.kind !== "assistant") return [];
+      const files = item.kind === "user" && item.files?.length ? item.files.map(attachmentName) : undefined;
+      if (!item.text.trim() && !files?.length) return [];
+      const speaker = item.speaker === "user" ? t("用户") : (store.assistant(item.speaker)?.name ?? item.speaker);
+      return [{
+        speaker,
+        at: formatExportTime(item.at),
+        text: item.text,
+        ...(item.quote?.text ? { quote: item.quote.text } : {}),
+        ...(files ? { files } : {}),
+      }];
+    });
+    const title = parent ? `${parent.name} · ${group.name}` : group.name;
+    const subtitle = parent ? (group.closeNote || parent.purpose || undefined) : (group.purpose || undefined);
+    const now = new Date();
+    const content = formatConversationMarkdown({
+      title,
+      ...(subtitle ? { subtitle } : {}),
+      exportedAt: formatExportTime(now.toISOString()),
+      messages,
+    });
+    const filename = safeExportFilename(title, formatExportDate(now));
+    return c.json({ filename, content });
+  });
+
+  app.get("/api/groups/:id/artifacts", (c) => {
+    const id = c.req.param("id");
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    return c.json({ artifacts: listGroupArtifacts(runtime.home, id) });
+  });
+
+  app.get("/api/groups/:id/artifacts/:name", (c) => {
+    const { id, name } = c.req.param();
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    try {
+      const artifact = readGroupArtifact(runtime.home, id, name);
+      return artifact ? c.json({ artifact }) : c.json({ error: t("文档不存在") }, 404);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.put("/api/groups/:id/artifacts/:name", async (c) => {
+    const { id, name } = c.req.param();
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    const body = await c.req.json().catch(() => undefined) as { title?: unknown; content?: unknown; expectedVersion?: unknown } | undefined;
+    if (typeof body?.content !== "string") return c.json({ error: t("文档内容必须是字符串") }, 400);
+    const expectedVersion = typeof body.expectedVersion === "number" && Number.isSafeInteger(body.expectedVersion) ? body.expectedVersion : undefined;
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    try {
+      const artifact = writeGroupArtifact(runtime.home, id, {
+        name,
+        title: typeof body.title === "string" ? body.title : undefined,
+        content: body.content,
+        updatedBy: "user",
+        ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+      });
+      bus.emit({ type: "group-artifacts", groupId: id });
+      runtime.groups.publish(id);
+      return c.json({ artifact });
+    } catch (error) {
+      if (error instanceof ArtifactConflictError) {
+        return c.json({ error: error.message, currentVersion: error.currentVersion }, 409);
+      }
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.delete("/api/groups/:id/artifacts/:name", (c) => {
+    const { id, name } = c.req.param();
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    try {
+      if (!deleteGroupArtifact(runtime.home, id, name)) return c.json({ error: t("文档不存在") }, 404);
+      bus.emit({ type: "group-artifacts", groupId: id });
+      runtime.groups.publish(id);
+      return c.json({ ok: true });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   app.post("/api/groups/:id/messages", async (c) => {
     const id = c.req.param("id");
     if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
@@ -1512,6 +1817,30 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     return c.json({ ok: true });
   });
 
+  app.post("/api/groups/:id/queue", async (c) => {
+    const id = c.req.param("id");
+    if (!store.group(id)) return c.json({ error: "群不存在" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { action?: unknown };
+    if (body.action !== "resume" && body.action !== "discard") {
+      return c.json({ error: "action 必须是 resume 或 discard" }, 400);
+    }
+    try {
+      const applied = body.action === "resume"
+        ? await runtime.groups.resumeQueue(id)
+        : await runtime.groups.discardQueue(id);
+      return c.json({ ok: true, applied });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  app.post("/api/groups/:id/rewind", async (c) => {
+    const body = await c.req.json<{ beforeItemId?: unknown } | null>().catch(() => null);
+    if (typeof body?.beforeItemId !== "string" || !body.beforeItemId.trim()) return c.json({ error: "beforeItemId 不能为空" }, 400);
+    const result = await runtime.groups.rewind(c.req.param("id"), body.beforeItemId);
+    return result ? c.json(result) : c.json({ error: "条目不存在" }, 404);
+  });
+
   app.delete("/api/assistants/:id/rules/:rid", (c) => {
     const id = c.req.param("id");
     const rules = store.rules(id).filter((rule) => rule.id !== c.req.param("rid"));
@@ -1525,7 +1854,7 @@ export function createApp(runtime: HobRuntime, options: { webDir?: string; home:
     if (!record) return c.json({ error: "委派不存在" }, 404);
     if (record.status !== "interrupted") return c.json({ error: "只有已中断的委派可以重新转交" }, 400);
     try {
-      return c.json({ delegation: await runtime.delegations.start(record.from, record.to, record.text) });
+      return c.json({ delegation: await runtime.delegations.retry(record) });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

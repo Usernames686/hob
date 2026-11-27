@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { State } from "../src/store.ts";
 
 vi.mock("../src/store.ts", () => ({
-  backPanel: vi.fn(), closeImageViewer: vi.fn(), closeKnowledge: vi.fn(), closePlugins: vi.fn(), openPlugins: vi.fn(),
-  closeSettings: vi.fn(), closeSheet: vi.fn(), closeSub: vi.fn(), getState: vi.fn(), goHome: vi.fn(),
+  applyRoute: vi.fn(), backPanel: vi.fn(), closeImageViewer: vi.fn(), closeKnowledge: vi.fn(), closePlugins: vi.fn(), openPlugins: vi.fn(),
+  closeSettings: vi.fn(), closeSheet: vi.fn(), closeStars: vi.fn(), closeSub: vi.fn(), getState: vi.fn(), goHome: vi.fn(),
   leaveChat: vi.fn(), leaveTopicList: vi.fn(),
   setMobile: vi.fn(), setSection: vi.fn(), subscribe: vi.fn(),
 }));

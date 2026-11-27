@@ -13,6 +13,7 @@ export function activityLabel(name: string, args: Record<string, unknown> = {}, 
     case "edit": labelText = withValue(t("正在修改"), basename(value("path"))); break;
     case "write": labelText = withValue(t("正在写入"), basename(value("path"))); break;
     case "start_job": labelText = withValue(t("分派任务"), value("title")); break;
+    case "call_members": labelText = t("按序点名成员"); break;
     case "check_job": labelText = t("查看任务"); break;
     case "save_skill": labelText = t("改技能"); break;
     case "reply_job": labelText = t("补充任务要求"); break;
@@ -22,6 +23,8 @@ export function activityLabel(name: string, args: Record<string, unknown> = {}, 
     case "set_rule": case "remove_rule": labelText = t("编辑规则"); break;
     case "create_routine": case "update_routine": case "delete_routine": labelText = withValue(t("设置定时任务"), value("name")); break;
     case "send_file": labelText = withValue(t("发送文件"), basename(value("path"))); break;
+    case "write_artifact": labelText = withValue(t("更新白板"), value("name")); break;
+    case "read_artifact": labelText = withValue(t("查看白板"), value("name")); break;
     case "set_avatar": labelText = t("更换头像"); break;
     case "create_assistant": labelText = t("新建助手"); break;
     case "message_assistant": { const id = value("assistantId"); labelText = id ? t("交给「{name}」", { name: assistantName?.(id) ?? id }) : t("交给助手"); break; }

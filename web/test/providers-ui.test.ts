@@ -9,7 +9,7 @@ let page: Page;
 beforeAll(async () => {
   server = await createServer({ server: { port: 31861, strictPort: true, host: "127.0.0.1" } });
   await server.listen();
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
   page.setDefaultTimeout(30_000);
 });

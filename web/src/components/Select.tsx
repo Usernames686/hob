@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "../icons.tsx";
+import { useLeave } from "../motion.ts";
 
 type Option = { value: string; label: string; meta?: string; disabled?: boolean; icon?: ReactNode };
 
@@ -10,6 +11,7 @@ export function Select({ value, onChange, options, disabled, className, "aria-la
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const leave = useLeave(open, 165);
   const [active, setActive] = useState(-1);
   const [position, setPosition] = useState<React.CSSProperties>({ visibility: "hidden" });
   const close = () => { setOpen(false); trigger.current?.focus(); };
@@ -32,7 +34,7 @@ export function Select({ value, onChange, options, disabled, className, "aria-la
     const above = rect.top - 8;
     const up = below < height && above > below;
     const maxHeight = Math.max(0, up ? above : below);
-    setPosition({ left: Math.max(8, Math.min(rect.left - shift, window.innerWidth - width - 8)), top: up ? Math.max(8, rect.top - Math.min(height, maxHeight) - 4) : rect.bottom + 4, width, maxHeight });
+    setPosition({ left: Math.max(8, Math.min(rect.left - shift, window.innerWidth - width - 8)), top: up ? Math.max(8, rect.top - Math.min(height, maxHeight) - 6) : rect.bottom + 6, width, maxHeight, transformOrigin: up ? "bottom left" : "top left" });
   }, [open]);
   useEffect(() => {
     if (!open) return;
@@ -60,6 +62,6 @@ export function Select({ value, onChange, options, disabled, className, "aria-la
       else if (event.key === "End") { event.preventDefault(); move(-1, options.length); }
       else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(active); }
     }}><span className="select-value">{selected?.icon}<span>{selected?.label ?? ""}</span></span><Icon name="down" size={14} /></button>
-    {open && createPortal(<div ref={popup} className="amenu select-popup" style={position} role="listbox" aria-label={label} onScroll={(event) => event.stopPropagation()}>{options.map((option, index) => <button key={`${option.value}-${index}`} type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} className={index === active ? "sel" : ""} onMouseEnter={() => !option.disabled && setActive(index)} onClick={() => choose(index)}><span className="select-value">{option.icon}<span>{option.label}</span></span>{option.meta ? <span className="select-meta">{option.meta}</span> : null}{option.value === value && <Icon name="check" size={15} />}</button>)}</div>, document.body)}
+    {leave.mounted && createPortal(<div ref={popup} className={`amenu select-popup${leave.leaving ? " leaving" : ""}`} style={position} role="listbox" aria-label={label} onScroll={(event) => event.stopPropagation()}>{options.map((option, index) => <button key={`${option.value}-${index}`} type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} className={index === active ? "sel" : ""} onMouseEnter={() => !option.disabled && setActive(index)} onClick={() => choose(index)}><span className="select-value">{option.icon}<span>{option.label}</span></span>{option.meta ? <span className="select-meta">{option.meta}</span> : null}{option.value === value && <Icon name="check" size={15} />}</button>)}</div>, document.body)}
   </>;
 }

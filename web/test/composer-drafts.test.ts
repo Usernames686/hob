@@ -111,3 +111,45 @@ it("归档会话移除它的草稿，退出登录清理其余草稿", async () =
   await store.select("hob");
   expect(store.composerDraft(store.getState()).text).toBe("");
 });
+
+it("未送达消息可退回输入框编辑，退出设置/收藏页保留原对话", async () => {
+  vi.spyOn(api, "sendMessage").mockRejectedValueOnce(new Error("offline"));
+  await store.select("hob");
+  store.setText("没发出去的长消息");
+  await store.send();
+  const failed = store.getState().pending.hob?.[0];
+  expect(failed?.status).toBe("failed");
+  store.editPending(failed!);
+  expect(store.getState().pending.hob).toEqual([]);
+  expect(store.composerDraft(store.getState()).text).toBe("没发出去的长消息");
+
+  store.openSettings();
+  expect(store.getState().page).toBe("settings");
+  store.closeSettings();
+  expect(store.getState()).toMatchObject({ page: "main", sel: "hob" });
+
+  store.openStars();
+  expect(store.getState().page).toBe("stars");
+  store.closeStars();
+  expect(store.getState()).toMatchObject({ page: "main", sel: "hob" });
+});
+
+it("草稿文本和引用会写入 sessionStorage，重载后仍保留", async () => {
+  const bag = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => bag.get(key) ?? null,
+    setItem: (key: string, value: string) => { bag.set(key, value); },
+    removeItem: (key: string) => { bag.delete(key); },
+  });
+  await store.select("hob");
+  store.setText("刷新不丢的草稿");
+  store.setQuote({ itemId: "q1", text: "引用内容" });
+
+  vi.resetModules();
+  const reloaded = await import("../src/store.ts");
+  expect(reloaded.composerDraft(reloaded.getState(), "hob")).toEqual({
+    text: "刷新不丢的草稿",
+    quote: { itemId: "q1", text: "引用内容" },
+    attachments: [],
+  });
+});

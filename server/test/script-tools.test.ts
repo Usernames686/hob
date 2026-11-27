@@ -7,7 +7,7 @@ import { ScriptToolCredentials, scriptToolList } from "../src/script-tools.ts";
 import { searchTools } from "../src/search.ts";
 import { buildRouterTools } from "../src/router-tools.ts";
 import { buildSystemPrompt, buildWorkerPrompt } from "../src/prompt.ts";
-import { makeHob } from "./helpers.ts";
+import { listenHttp, makeHob } from "./helpers.ts";
 
 const run = promisify(execFile);
 
@@ -40,9 +40,9 @@ describe("script tools", () => {
     });
     const service = new ScriptToolCredentials();
     try {
-      await new Promise<void>((resolve, reject) => { fake.once("error", reject); fake.listen(31823, "127.0.0.1", resolve); });
+      const baseUrl = await listenHttp(fake);
       await service.start();
-      const tools = searchTools(hob.home, () => [{ name: "searxng", enabled: true, baseUrl: "http://127.0.0.1:31823" }]);
+      const tools = searchTools(hob.home, () => [{ name: "searxng", enabled: true, baseUrl }]);
       const credential = service.issue({ tools: async () => tools });
       const script = "node -e 'tools.web_search({query:\"海风\"}).then(x => console.log(x))'";
       const result = await run("/bin/bash", ["-c", script], { env: service.environment(process.env, credential.token) });

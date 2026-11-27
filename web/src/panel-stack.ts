@@ -16,6 +16,7 @@ export type PanelPage =
   | { kind: "member"; id: string }
   | { kind: "routines" | "skills" | "knowledge" | "rules"; groupId?: string }
   | { kind: "jobs" }
+  | { kind: "artifact"; groupId: string; name?: string }
   | { kind: "job"; id: string; round?: number; full?: boolean; instant?: boolean; jumpApprovalId?: string }
   | ({ kind: "file" } & FilePreviewState);
 
@@ -24,6 +25,7 @@ function samePage(a: PanelPage, b: PanelPage): boolean {
   if (a.kind === "routine" && b.kind === "routine") return a.id === b.id;
   if (a.kind === "job" && b.kind === "job") return a.id === b.id;
   if (a.kind === "member" && b.kind === "member") return a.id === b.id;
+  if (a.kind === "artifact" && b.kind === "artifact") return a.groupId === b.groupId && a.name === b.name;
   if (a.kind === "file" && b.kind === "file") return a.liveId || b.liveId ? a.liveId === b.liveId : a.path === b.path;
   return true;
 }
@@ -73,6 +75,7 @@ export function replacePage(stack: PanelPage[], page: PanelPage): PanelPage[] {
 }
 
 export function pageKey(page: PanelPage): string {
+  if (page.kind === "artifact") return `artifact:${JSON.stringify([page.groupId, page.name])}`;
   return `${page.kind}:${"id" in page ? page.id : "path" in page ? page.liveId ?? page.path : ""}`;
 }
 

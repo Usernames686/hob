@@ -191,8 +191,10 @@ function CardDateControl({ element, value, onChange, disabled }: { element: any;
 }
 
 function CardTableValue({ value }: { value: unknown }) {
-  const [checked, setChecked] = useState(typeof value === "boolean" ? value : false);
-  if (typeof value === "boolean") return <button type="button" className={`hc-table-switch${checked ? " on" : ""}`} role="switch" aria-checked={checked} onClick={() => setChecked((current) => !current)}><span /></button>;
+  if (typeof value === "boolean") {
+    const label = value ? t("开") : t("关");
+    return <span className={`hc-table-switch${value ? " on" : ""}`} role="img" title={label} aria-label={label}><span /></span>;
+  }
   if (value === undefined || value === null || value === "") return <span className="hc-empty">—</span>;
   return <span>{String(value)}</span>;
 }
@@ -280,7 +282,7 @@ function CardInputControl({
   if (["date_picker", "picker_time", "picker_datetime"].includes(element.tag)) return element.tag === "date_picker" ? <CardDateControl element={element} value={value} onChange={onChange} disabled={disabled} /> : <input className="hc-input" type={element.tag === "picker_time" ? "time" : "datetime-local"} disabled={disabled} value={text} onChange={(event) => onChange(event.target.value)} />;
   if (element.input_type === "number") return <span className="hc-number"><button type="button" disabled={disabled || (element.min !== undefined && Number(value || 0) <= element.min)} onClick={() => onChange(Math.max(element.min ?? -Infinity, Number(value || 0) - 1))}>−</button><input className="hc-input" disabled={disabled} type="number" step="any" placeholder={cardText(element.placeholder)} value={text} min={element.min} max={element.max} onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))} /><button type="button" disabled={disabled || (element.max !== undefined && Number(value || 0) >= element.max)} onClick={() => onChange(Math.min(element.max ?? Infinity, Number(value || 0) + 1))}>＋</button></span>;
   if (element.input_type === "multiline_text") return <textarea className="hc-input hc-area" disabled={disabled} value={text} placeholder={cardText(element.placeholder)} maxLength={element.max_length} onChange={(event) => onChange(event.target.value)} />;
-  if (element.tag === "input" && element.name === "to" && text.includes("<") && text.endsWith(">")) return <div className="hc-input hc-recipient"><span>{text}</span><Icon name="close" size={13} /></div>;
+  if (element.tag === "input" && element.name === "to" && text.includes("<") && text.endsWith(">")) return <div className="hc-input hc-recipient"><span>{text}</span><button type="button" className="hc-recipient-clear" disabled={disabled} title={t("移除")} aria-label={t("移除")} onClick={() => onChange("")}><Icon name="close" size={13} /></button></div>;
   const password = element.input_type === "password";
   const field = <span className="hc-input-wrap"><input className="hc-input" disabled={disabled} type={password && !show ? "password" : "text"} value={text} placeholder={cardText(element.placeholder)} maxLength={element.max_length} onChange={(event) => onChange(event.target.value)} onBlur={onCommit} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing && onCommit) { event.preventDefault(); onCommit(); } }} />{password ? <button type="button" className="hc-eye" disabled={disabled} aria-label={t("显示密码")} onClick={() => setShow((current) => !current)}><Icon name="eye" size={16} /></button> : null}</span>;
   // 「生成」是输入框旁边独立的按钮（效果图 1），不在输入框里面

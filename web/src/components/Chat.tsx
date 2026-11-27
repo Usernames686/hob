@@ -1,17 +1,25 @@
 // 中间一栏：头部 + 消息区 + 输入框。
 import { currentLocale, t } from "../../../shared/i18n.ts";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { AssistantSummary, GroupItem, GroupSummary, Item, TodoItem } from "../../../shared/types.ts";
+import type { AssistantSummary, ConversationRef, GroupItem, GroupReplyMode, GroupSummary, Item, ModelInfo, TodoItem } from "../../../shared/types.ts";
 import { isImagePath } from "../../../shared/media.ts";
+import { artifactNameKey, normalizeArtifactName } from "../../../shared/group-artifact.ts";
+import { suggestArtifactTitleAndName } from "../../../shared/export-markdown.ts";
+import { downloadMarkdownFile } from "../download.ts";
 import { localPath } from "../outbox.ts";
 import { pastedFiles } from "../pasted-files.ts";
 import { fileIcon } from "../file-icons.ts";
 import { Icon } from "../icons.tsx";
+import { BrandIcon, brandForRef } from "../brand-icons.tsx";
+import { fitThinking, rosterOptions } from "../model-list.ts";
 import { fmtWhen } from "../util.ts";
+import { groupThinkingText, queuedMembersLabel } from "../group-thinking.ts";
 import { Avatar } from "../sprites.tsx";
-import { applyMention, filterMembers, mentionAt, stepPick } from "../mention.ts";
+import { applyMention, filterMembers, groupSuggestionPrefix, mentionAt, stepPick } from "../mention.ts";
 import {
+  collapsePanel,
+  discardGroupQueue,
   expandPanel,
   toggleSideCollapsed,
   focusComposer,
@@ -19,12 +27,21 @@ import {
   groupChatItems,
   groupSpeaking,
   leaveChat,
+  loadGroupArtifacts,
+  loadModels,
   loadOlderGroupItems,
+  openArtifact,
+  openGroupArtifactsTab,
   openSettings,
   openSheet,
+  patchAssistant,
+  patchGroup,
   removeAttachment,
+  resumeGroupQueue,
+  saveGroupArtifact,
   send,
   selectGroup,
+  setNotice,
   setQuote,
   setSection,
   setText,
@@ -35,7 +52,9 @@ import {
   composerDraft,
   loadOlderItems,
   openFilePreview,
+  openJob,
   photoUrl,
+  rewindConversation,
   useApp,
 } from "../store.ts";
 import { useLeave } from "../motion.ts";
@@ -47,6 +66,7 @@ import { ClosedTopic } from "./Topics.tsx";
 import { TodoStrip, type RunningJob } from "./Todos.tsx";
 import { DelayedText } from "./Empty.tsx";
 import { ComposerPlus } from "./ComposerPlus.tsx";
+import { DialogShell } from "./DialogShell.tsx";
 
 export function conversationState(s: ReturnType<typeof useApp>) {
   const g = groupById(s, s.gsel);
@@ -64,7 +84,7 @@ function Thinking({ leaving, gap, a }: { leaving: boolean; gap: boolean; a: Assi
       {gap ? <div className="g" /> : null}
       <div className={`hov think${leaving ? " leaving" : ""}`}>
         <div className="activity-line" role="status">
-          <Avatar sprite={a.sprite} prop={a.prop} size={46} free motion={a.activity?.state === "tool" ? "work" : "think"} />
+          <Avatar sprite={a.sprite} prop={a.prop} size={46} free live interactive={false} glow motion={a.activity?.state === "tool" ? "work" : "think"} />
           <span className="activity-shimmer">{a.activity?.label ?? t("正在思考…")}</span>
         </div>
       </div>
@@ -102,14 +122,19 @@ function useStickToBottom(
         setStuck(next.stuck);
       }
     };
+    let frame = 0;
     const ro = new ResizeObserver(() => {
-      expect.current = expectAfterResize(pinned.current, expect.current, box());
-      if (pinned.current) el.scrollTop = expect.current;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        expect.current = expectAfterResize(pinned.current, expect.current, box());
+        if (pinned.current) el.scrollTop = expect.current;
+      });
     });
     el.addEventListener("scroll", onScroll, { passive: true });
     ro.observe(el);
     for (const child of Array.from(el.children)) ro.observe(child);
     return () => {
+      cancelAnimationFrame(frame);
       el.removeEventListener("scroll", onScroll);
       ro.disconnect();
     };
@@ -231,23 +256,52 @@ function runningJobs(s: ReturnType<typeof useApp>, items: Item[]): RunningJob[] 
 }
 
 /**
- * 顶上正中：一个大头像浮着，名字在它下面，没有底框，消息从下面滚过去。
- * 群是叠放头像和「综合 · 几位成员」；话题是群主的头像和话题名。
+ * 顶上正中：一颗紧凑横向液态玻璃胶囊（小头像 + 名字与状态 + 轻箭头），点一下直接展开或收起右栏信息。
  */
-function ChatHead({ g, a, parent, mobile }: { g?: GroupSummary; a?: AssistantSummary; parent?: GroupSummary; mobile?: boolean }) {
+function ChatHead({ g, a, parent, mobile, hasRightBtn }: { g?: GroupSummary; a?: AssistantSummary; parent?: GroupSummary; mobile?: boolean; hasRightBtn?: boolean }) {
   const s = useApp();
-  const size = mobile ? 56 : 48;
+  const size = mobile ? 32 : 30;
   const owner = g && parent ? s.assistants.find((x) => x.id === g.ownerId) : undefined;
-  const face = owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={size} /> : g ? <GroupCluster g={g} assistants={s.assistants} size={size} /> : a ? <Avatar sprite={a.sprite} prop={a.prop} size={size} /> : null;
+  const busy = g ? g.busy.length > 0 : Boolean(a?.busy);
+  const face = owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={size} live follow interactive={false} motion={busy ? "think" : undefined} /> : g ? <GroupCluster g={g} assistants={s.assistants} size={size} /> : a ? <Avatar sprite={a.sprite} prop={a.prop} size={size} live follow interactive={false} motion={busy ? "think" : undefined} /> : null;
   // 话题只写话题名：在哪个群，左栏（手机上是返回键）已经交代了；名字长了一行省略，悬停看全名
   const sub = g && !parent ? <span className="ccap-sub">{t("综合 · {n} 位成员", { n: g.members.length })}</span> : null;
   const name = g?.name ?? a?.name ?? "";
+  const artifactPage = g ? s.groupArtifacts?.[g.id] : undefined;
+  const artifactCount = g ? (artifactPage?.loaded ? artifactPage.items.length : (g.artifactCount ?? 0)) : 0;
+  const toggleInfo = () => {
+    if (mobile) openSheet();
+    else if (s.collapsed) expandPanel();
+    else collapsePanel();
+  };
   return (
-    <div className={`ccap${sub ? "" : " solo"}${g && !owner ? " cluster" : ""}`} title={name}>
-      <span className="ccap-face">{face}</span>
-      <span className="ccap-nm">{name}</span>
-      {sub}
-    </div>
+    <>
+      <button
+        type="button"
+        className={`ccap ccap-pill${sub ? "" : " solo"}${g && !owner ? " cluster" : ""}${busy ? " busy" : ""}`}
+        title={mobile ? (g ? t("群信息") : t("助手信息")) : s.collapsed ? t("展开右栏") : t("收起右栏")}
+        onClick={toggleInfo}
+      >
+        <span className="ccap-face">{face}</span>
+        <span className="ccap-text">
+          <span className="ccap-nm">{name}</span>
+          {sub}
+        </span>
+        <Icon name="chev" size={13} className="ccap-chev" />
+      </button>
+      {g && artifactCount > 0 ? (
+        <button
+          type="button"
+          className={`chead-doc${hasRightBtn ? " shifted" : ""}`}
+          title={t("查看共享文档")}
+          aria-label={t("查看共享文档")}
+          onClick={() => openGroupArtifactsTab(g.id)}
+        >
+          <Icon name="doc" size={15} />
+          <span>{artifactCount}</span>
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -265,7 +319,7 @@ function EmptyChat({ a }: { a: AssistantSummary }) {
   const ready = models.roster.length > 0 && models.conversation.ref !== "";
   return (
     <div className="hello">
-      <Avatar sprite={a.sprite} prop={a.prop} size={88} free motion="home" />
+      <Avatar sprite={a.sprite} prop={a.prop} size={108} free live interactive follow motion="home" />
       <div className="t">{a.primary ? t("我是{assistant}，你的主助手", { assistant: sendName(a.name, false) }) : t("我是{assistant}", { assistant: sendName(a.name, false) })}</div>
       <div className="d">
         {a.primary
@@ -307,26 +361,59 @@ function EmptyChat({ a }: { a: AssistantSummary }) {
   );
 }
 
-/** 群里正在说话的成员：底部一行一个人，头像 +「名字 正在思考…」。 */
+/** 接力排队进度：显示接下来按序发言的成员接力条。 */
+function GroupQueueTrail({ g }: { g: GroupSummary }) {
+  const s = useApp();
+  const pending = g.queue && !g.queue.paused ? g.queue.pending : [];
+  if (!pending.length) return null;
+  const shown = pending.slice(0, 4);
+  const extra = pending.length - shown.length;
+  return (
+    <div className="group-queue" role="status">
+      <span className="group-queue-label">{t("接下来")}</span>
+      <div className="group-queue-list">
+        {shown.map((id, i) => {
+          const m = s.assistants.find((a) => a.id === id);
+          const name = m?.name ?? id;
+          return (
+            <span className="group-queue-step" key={id}>
+              {i > 0 ? <span className="group-queue-arrow" aria-hidden="true">→</span> : null}
+              <span className="group-queue-chip">
+                {m ? <Avatar sprite={m.sprite} prop={m.prop} size={18} /> : null}
+                <span>{name}</span>
+              </span>
+            </span>
+          );
+        })}
+        {extra > 0 ? <span className="group-queue-more">+{extra}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** 群里正在说话的成员：底部一行一个人，头像 +「名字 正在思考…」，下方跟接力排队进度。 */
 function GroupThinking({ g }: { g: GroupSummary }) {
   const s = useApp();
   const speaking = groupSpeaking(s, g);
-  if (!speaking.length) return null;
+  const hasQueue = Boolean(g.queue && !g.queue.paused && g.queue.pending.length > 0);
+  if (!speaking.length && !hasQueue) return null;
   return (
     <>
       <div className="g" />
       {speaking.map((id) => {
         const m = s.assistants.find((a) => a.id === id);
         if (!m) return null;
+        const activity = s.groupActivity[g.id]?.[id];
         return (
           <div className="hov think" key={id}>
             <div className="activity-line" role="status">
-              <Avatar sprite={m.sprite} prop={m.prop} size={40} free motion={s.groupActivity[g.id]?.[id]?.state === "tool" ? "work" : "think"} />
-              <span className="activity-shimmer">{t("{name} 正在思考…", { name: sendName(m.name) })}</span>
+              <Avatar sprite={m.sprite} prop={m.prop} size={40} free live interactive={false} glow motion={activity?.state === "tool" ? "work" : "think"} />
+              <span className="activity-shimmer">{groupThinkingText(sendName(m.name), activity)}</span>
             </div>
           </div>
         );
       })}
+      <GroupQueueTrail g={g} />
     </>
   );
 }
@@ -367,24 +454,172 @@ function chatKey(sel: string | null, gen: number | undefined): string {
   return `${sel ?? ""}|${gen ?? 0}`;
 }
 
+function RewindDialog({ conversation, item, removedCount, onClose }: { conversation: ConversationRef; item: Item; removedCount: number; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const title = t("回退到这里之前");
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rewindConversation(conversation, item.id);
+      onClose();
+    } catch (error) {
+      setError(t("回退失败：{error}", { error: error instanceof Error ? error.message : String(error) }));
+      setBusy(false);
+    }
+  };
+  return <DialogShell label={title} title={title} onClose={() => { if (!busy) onClose(); }} onSubmit={(event) => { event.preventDefault(); void submit(); }} actions={<>
+    <button type="button" className="hob-btn" disabled={busy} onClick={onClose} autoFocus>{t("取消")}</button>
+    <button type="submit" className="hob-btn hob-btn-danger" disabled={busy}>{t("确认回退")}</button>
+  </>}>
+    <div>{removedCount > 1 ? t("将移除这条及后续共 {n} 条消息，且无法撤销。", { n: removedCount }) : t("这条消息及其后续消息将从对话中移除，且无法撤销。")}</div>
+    {item.kind === "user" ? <div>{t("这条用户消息的文字会恢复到输入框。")}</div> : null}
+    {error ? <div className="gcreate-error" role="alert">{error}</div> : null}
+  </DialogShell>;
+}
+
+function SaveArtifactDialog({ groupId, content, onClose }: { groupId: string; content: string; onClose: () => void }) {
+  const s = useApp();
+  const initial = useMemo(() => suggestArtifactTitleAndName(content, t("群聊沉淀")), [content]);
+  const [title, setTitle] = useState(initial.title);
+  const [filename, setFilename] = useState(initial.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const artifactsState = s.groupArtifacts?.[groupId];
+  useEffect(() => {
+    if (!artifactsState?.loaded && !artifactsState?.loading) {
+      void loadGroupArtifacts(groupId);
+    }
+  }, [groupId, artifactsState?.loaded, artifactsState?.loading]);
+
+  const existsSameName = useMemo(() => {
+    const list = artifactsState?.items ?? [];
+    if (!list.length || !filename.trim()) return false;
+    try {
+      const key = artifactNameKey(normalizeArtifactName(filename));
+      return list.some((item) => artifactNameKey(item.name) === key);
+    } catch {
+      return false;
+    }
+  }, [artifactsState?.items, filename]);
+
+  const dialogTitle = t("存为白板文档");
+  const submit = async () => {
+    if (busy || !filename.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await saveGroupArtifact(groupId, filename, { title: title.trim() || undefined, content });
+      onClose();
+      setNotice(t("已保存到白板「{name}」", { name: saved.name }));
+      openArtifact(groupId, saved.name);
+    } catch (err) {
+      setError(t("保存失败：{error}", { error: err instanceof Error ? err.message : String(err) }));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <DialogShell
+      label={dialogTitle}
+      title={dialogTitle}
+      onClose={() => { if (!busy) onClose(); }}
+      onSubmit={(event) => { event.preventDefault(); void submit(); }}
+      actions={
+        <>
+          <button type="button" className="hob-btn" disabled={busy} onClick={onClose}>{t("取消")}</button>
+          <button type="submit" className="hob-btn hob-btn-primary" disabled={busy || !filename.trim()}>
+            {busy ? t("正在保存…") : t("保存并查看")}
+          </button>
+        </>
+      }
+    >
+      <label className="gcreate-field">
+        <span>{t("文档标题")}</span>
+        <input
+          autoFocus
+          value={title}
+          disabled={busy}
+          placeholder={t("例如：技术方案（可选）")}
+          onChange={(event) => setTitle(event.target.value)}
+        />
+      </label>
+      <label className="gcreate-field">
+        <span>{t("文件名称")}</span>
+        <input
+          required
+          maxLength={80}
+          value={filename}
+          disabled={busy}
+          placeholder={t("例如：方案.md")}
+          onChange={(event) => setFilename(event.target.value)}
+        />
+      </label>
+      {existsSameName ? (
+        <div className="gcreate-note save-doc-hint">
+          <Icon name="info" size={14} />
+          <span>{t("已存在同名文档，保存将更新为新版本")}</span>
+        </div>
+      ) : null}
+      {error ? <div className="gcreate-error" role="alert">{error}</div> : null}
+    </DialogShell>
+  );
+}
+
 function ConversationBody({ className, scrollRef, onScroll, state, scrollId, think, stick, mobile = false }: { className: string; scrollRef: React.RefObject<HTMLDivElement | null>; onScroll: React.UIEventHandler<HTMLDivElement>; state: ReturnType<typeof conversationState>; scrollId: string | null; think: ReturnType<typeof useLeave>; stick: { atBottom: boolean; toBottom: () => void }; mobile?: boolean }) {
   const { g, a, items, empty, busy } = state;
   const s = useApp();
   const assistants = s.assistants;
+  const conversation: ConversationRef | undefined = g ? { kind: "group", id: g.id } : a ? { kind: "assistant", id: a.id } : undefined;
+  const [rewind, setRewind] = useState<{ conversation: ConversationRef; item: Item } | null>(null);
+  const [saveDoc, setSaveDoc] = useState<{ groupId: string; text: string } | null>(null);
+  const onRewind = conversation ? (item: Item) => setRewind({ conversation, item }) : undefined;
+  const onSaveDoc = g
+    ? (item: Item) => {
+        if (item.kind === "assistant" && item.text.trim()) setSaveDoc({ groupId: g.id, text: item.text });
+      }
+    : a
+      ? (item: Item) => {
+          if (item.kind !== "assistant" || !item.text.trim()) return;
+          const { name } = suggestArtifactTitleAndName(item.text, a.name);
+          downloadMarkdownFile(name, item.text);
+          setNotice(t("已导出「{name}」", { name }));
+        }
+      : undefined;
+  useEffect(() => {
+    setRewind(null);
+    setSaveDoc(null);
+  }, [conversation?.kind, conversation?.id]);
   const suggestions = think.mounted ? undefined : g?.suggestions ?? a?.suggestions;
   return <>
     <div className={className} ref={scrollRef} onScroll={onScroll}><div className={`col${empty ? " mid" : ""}`}>
       {g?.parentId ? <div className="topic-open-line">{openLine(g, assistants)}</div> : null}
       <OlderStatus id={scrollId} group={Boolean(g)} />
-      {empty ? (g ? <EmptyGroup g={g} /> : a ? <EmptyChat a={a} /> : null) : g ? <GroupItemList g={g} items={items as GroupItem[]} /> : <ItemList items={items} />}
-      {think.mounted && g ? <GroupThinking g={g} /> : think.mounted && a ? <Thinking a={a} leaving={think.leaving} gap={items.at(-1)?.kind === "user"} /> : null}
+      {empty ? (g ? <EmptyGroup g={g} /> : a ? <EmptyChat a={a} /> : null) : g ? <GroupItemList g={g} items={items as GroupItem[]} onRewind={onRewind} onSaveDoc={onSaveDoc} /> : <ItemList items={items} onRewind={onRewind} onSaveDoc={onSaveDoc} />}
+      {think.mounted && g ? <GroupThinking g={g} /> : think.mounted && a ? <Thinking a={a} leaving={think.leaving} gap={items.at(-1)?.kind === "user"} /> : g && g.queue && !g.queue.paused && g.queue.pending.length > 0 ? <GroupQueueTrail g={g} /> : null}
       <FollowUpStrip items={suggestions} group={Boolean(g)} prefix={groupSuggestionPrefix(g, items, assistants)} onPick={(text) => {
-        const hasText = composerDraft(s).text.length > 0;
+        const current = composerDraft(s).text;
+        if (current.trim().length > 0) {
+          setText(`${current.replace(/\s+$/, "")}\n${text}`);
+          focusComposer();
+          return;
+        }
         setText(text);
-        if (!hasText) void send();
+        void send();
       }} />
     </div></div>
     <JumpToBottom show={!stick.atBottom} busy={busy} onClick={stick.toBottom} />
+    {rewind && rewind.conversation.id === conversation?.id && rewind.conversation.kind === conversation.kind ? (
+      <RewindDialog
+        {...rewind}
+        removedCount={Math.max(1, items.length - Math.max(0, items.findIndex((entry) => entry.id === rewind.item.id)))}
+        onClose={() => setRewind((current) => current === rewind ? null : current)}
+      />
+    ) : null}
+    {saveDoc && g && saveDoc.groupId === g.id ? <SaveArtifactDialog groupId={saveDoc.groupId} content={saveDoc.text} onClose={() => setSaveDoc((current) => current === saveDoc ? null : current)} /> : null}
   </>;
 }
 
@@ -405,7 +640,7 @@ export function Chat() {
     <main className="chat">
       <div className="chead">
         {s.sideCollapsed ? <button className="hob-icon-btn side-expand" title={t("展开左栏")} aria-label={t("展开左栏")} onClick={toggleSideCollapsed}><Icon name="panel" size={18} style={{ transform: "scaleX(-1)" }} /></button> : null}
-        <ChatHead g={g} a={a} parent={parent} />
+        <ChatHead g={g} a={a} parent={parent} hasRightBtn={s.collapsed} />
         {s.collapsed ? (
           <button className="chead-btn right" title={t("展开右栏")} onClick={expandPanel}>
             <Icon name="panel" size={18} />
@@ -429,12 +664,186 @@ function FollowUpStrip({ items, group, prefix, onPick }: { items?: string[]; gro
   );
 }
 
-function groupSuggestionPrefix(g: GroupSummary | undefined, items: Item[], assistants: AssistantSummary[]): string {
-  if (!g) return "";
-  const last = [...items].reverse().find((item) => item.kind === "assistant") as GroupItem | undefined;
-  if (!last || last.speaker === g.ownerId) return "";
-  const member = assistants.find((assistant) => assistant.id === last.speaker);
-  return member ? `@${member.name} ` : "";
+/** 输入框底部工具栏里的弹出层定位与平滑退场封装。 */
+function useInlinePopover() {
+  const [open, setOpen] = useState(false);
+  const leave = useLeave(open, 175);
+  const btn = useRef<HTMLButtonElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !btn.current) return;
+    const rect = btn.current.getBoundingClientRect();
+    const menuWidth = box.current?.offsetWidth || 240;
+    const maxLeft = Math.max(8, window.innerWidth - menuWidth - 8);
+    setPos({ left: Math.max(8, Math.min(rect.left, maxLeft)), bottom: window.innerHeight - rect.top + 8 });
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !btn.current || !box.current) return;
+    const rect = btn.current.getBoundingClientRect();
+    const menuWidth = box.current.offsetWidth || 240;
+    const maxLeft = Math.max(8, window.innerWidth - menuWidth - 8);
+    const nextLeft = Math.max(8, Math.min(rect.left, maxLeft));
+    if (pos && Math.abs(pos.left - nextLeft) > 1) {
+      setPos({ left: nextLeft, bottom: window.innerHeight - rect.top + 8 });
+    }
+  }, [open, pos]);
+
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: PointerEvent) => {
+      if (!box.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); }
+    };
+    const resize = () => setOpen(false);
+    document.addEventListener("pointerdown", down, true);
+    window.addEventListener("keydown", key, true);
+    window.addEventListener("resize", resize);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("keydown", key, true);
+      window.removeEventListener("resize", resize);
+    };
+  }, [open]);
+
+  return { open, setOpen, leave, btn, box, pos };
+}
+
+/** 输入框底部外露的当前模型胶囊：一眼可见当前对话模型，点开直接就地切换。 */
+function ComposerModelPill({ g, a }: { g?: GroupSummary; a?: AssistantSummary }) {
+  const s = useApp();
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const pop = useInlinePopover();
+  const settings = s.settings.settings.models;
+  const rosterKey = settings.roster.map((entry) => entry.ref).join(",");
+  useEffect(() => { void loadModels().then((view) => setModels(view?.models ?? null)); }, [rosterKey, s.settings.revision]);
+  const roster = settings.roster.filter((entry) => models?.some((model) => model.ref === entry.ref));
+  const owner = g?.parentId ? s.groups.find((item) => item.id === g.parentId) ?? g : g;
+  const isTopic = Boolean(g?.parentId);
+  const own = owner ? owner.models?.conversation : a?.models?.conversation;
+  const activeRef = own?.ref ?? (owner ? "" : settings.conversation.ref);
+  if (!activeRef && !owner) return null;
+  const nameOf = (ref: string) => models?.find((model) => model.ref === ref)?.name ?? ref.split("/").pop() ?? ref;
+  const followLabel = owner ? t("跟随各成员") : t("跟随全局（{name}）", { name: nameOf(settings.conversation.ref) });
+  const label = own ? nameOf(own.ref) : owner ? followLabel : nameOf(settings.conversation.ref);
+  const switchable = Boolean(models && roster.length > 1 && (g || a));
+
+  const choose = async (ref: string) => {
+    pop.setOpen(false);
+    if (ref === (own?.ref ?? "")) return;
+    const pick = ref ? { ref, thinking: fitThinking(models?.find((model) => model.ref === ref), settings.roster.find((entry) => entry.ref === ref)?.thinking ?? own?.thinking ?? settings.conversation.thinking) } : null;
+    if (owner) {
+      const failure = await patchGroup(owner.id, { models: { conversation: pick } });
+      if (failure) setNotice(t("保存失败：{error}", { error: failure }));
+      return;
+    }
+    if (!a) return;
+    const next = { ...a.models };
+    if (pick) next.conversation = pick;
+    else delete next.conversation;
+    await patchAssistant(a.id, { models: next });
+  };
+
+  return (
+    <>
+      <button
+        ref={pop.btn}
+        type="button"
+        className={`comp-pill${pop.open ? " open" : ""}`}
+        disabled={!switchable}
+        title={isTopic ? t("对话模型（应用到整个群）") : t("对话模型")}
+        aria-label={isTopic ? t("对话模型（应用到整个群）") : t("对话模型")}
+        aria-expanded={switchable ? pop.open : undefined}
+        onClick={() => switchable && pop.setOpen((v) => !v)}
+      >
+        <BrandIcon plain size={14} brand={brandForRef(activeRef, models ?? [], s.settings.settings.providers)} />
+        <span>{label}</span>
+        {switchable ? <Icon name="down" size={12} className="comp-pill-chev" /> : null}
+      </button>
+      {pop.leave.mounted && pop.pos ? createPortal(
+        <div
+          ref={pop.box}
+          className={`amenu comp-pill-menu${pop.leave.leaving ? " leaving" : ""}`}
+          role="menu"
+          style={{ left: pop.pos.left, bottom: pop.pos.bottom, transformOrigin: "bottom left" }}
+        >
+          {isTopic ? <div className="comp-pill-menu-note">{t("切换后应用到整个群")}</div> : null}
+          {[{ value: "", label: followLabel }, ...rosterOptions(roster, own?.ref, nameOf)].map((option) => (
+            <button
+              key={option.value || "follow"}
+              type="button"
+              role="menuitemradio"
+              aria-checked={option.value === (own?.ref ?? "")}
+              className={option.value === (own?.ref ?? "") ? "sel" : undefined}
+              onClick={() => void choose(option.value)}
+            >
+              <BrandIcon size={20} brand={brandForRef(option.value || (owner ? "" : settings.conversation.ref), models ?? [], s.settings.settings.providers)} />
+              <span className="comp-pill-menu-label">{option.label}</span>
+              {option.value === (own?.ref ?? "") ? <Icon name="check" size={15} /> : null}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
+}
+
+/** 群/话题输入框底部的回应模式胶囊：未点名时由谁回应，原地一键切换。 */
+function ComposerReplyPill({ g }: { g: GroupSummary }) {
+  const pop = useInlinePopover();
+  const mode: GroupReplyMode = g.replyMode ?? "owner";
+  const labels: Record<GroupReplyMode, string> = { owner: t("群主回应"), auto: t("自动选人"), all: t("全员回应") };
+  const choose = async (next: GroupReplyMode) => {
+    pop.setOpen(false);
+    if (next === mode) return;
+    const failure = await patchGroup(g.id, { replyMode: next });
+    if (failure) setNotice(t("保存失败：{error}", { error: failure }));
+  };
+  return (
+    <>
+      <button
+        ref={pop.btn}
+        type="button"
+        className={`comp-pill${pop.open ? " open" : ""}`}
+        title={t("没点名时")}
+        aria-label={t("没点名时")}
+        aria-expanded={pop.open}
+        onClick={() => pop.setOpen((v) => !v)}
+      >
+        <Icon name="reply" size={13} />
+        <span>{labels[mode]}</span>
+        <Icon name="down" size={12} className="comp-pill-chev" />
+      </button>
+      {pop.leave.mounted && pop.pos ? createPortal(
+        <div
+          ref={pop.box}
+          className={`amenu comp-pill-menu${pop.leave.leaving ? " leaving" : ""}`}
+          role="menu"
+          style={{ left: pop.pos.left, bottom: pop.pos.bottom, transformOrigin: "bottom left" }}
+        >
+          {(["owner", "auto", "all"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="menuitemradio"
+              aria-checked={item === mode}
+              className={item === mode ? "sel" : undefined}
+              onClick={() => void choose(item)}
+            >
+              <span className="comp-pill-menu-label">{labels[item]}</span>
+              {item === mode ? <Icon name="check" size={15} /> : null}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
 }
 
 /** 输入框上方的待办和附件都在这里排成一列。 */
@@ -443,6 +852,7 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
   const draft = composerDraft(s);
   const a = s.assistants.find((x) => x.id === s.sel);
   const g = groupById(s, s.gsel);
+  const convKey = g ? `group:${g.id}` : (s.sel ?? "");
   const owner = g ? s.assistants.find((x) => x.id === g.ownerId) : undefined;
   const members = g ? membersOf(g, s.assistants) : [];
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -452,14 +862,45 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
   const [pick, setPick] = useState(0);
   /** Esc 关掉的那一下：这段字不再弹，改了字再弹 */
   const [muted, setMuted] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [queueBusy, setQueueBusy] = useState<"resume" | "discard" | null>(null);
+  const pausedQueue = g?.queue?.paused ? g.queue.pending : null;
   /** 名单浮在输入框上面：挂在 body 上按屏幕坐标摆，不被输入框的模糊层裁掉 */
   const [anchor, setAnchor] = useState<{ left: number; bottom: number; width: number } | null>(null);
   const has = draft.text.trim().length > 0 || draft.attachments.length > 0;
+  const canStop = Boolean(g ? groupSpeaking(s, g).length > 0 : a?.busy);
   const quote = useLeave(draft.quote !== null, 180);
+  const lastQuote = useRef(draft.quote);
+  if (draft.quote) lastQuote.current = draft.quote;
+  const shownQuote = draft.quote ?? (quote.mounted ? lastQuote.current : null);
+  const prevConv = useRef(convKey);
+  useEffect(() => {
+    if (prevConv.current === convKey) return;
+    prevConv.current = convKey;
+    setCaret(draft.text.length);
+    setPick(0);
+    setMuted(null);
+    setStopping(false);
+    setQueueBusy(null);
+  }, [convKey, draft.text.length]);
+  useEffect(() => {
+    if (!canStop && stopping) setStopping(false);
+  }, [canStop, stopping]);
+  useEffect(() => {
+    if (!pausedQueue && queueBusy) setQueueBusy(null);
+  }, [pausedQueue, queueBusy]);
+  const handleStop = () => {
+    if (stopping) return;
+    setStopping(true);
+    void (g ? stopGroup(g.id) : a ? stopAssistant(a.id) : Promise.resolve()).finally(() => setStopping(false));
+  };
   // 群里打到 @ 就列成员：名字、职责，群主排第一
   const typing = g ? mentionAt(draft.text, caret, members.map((m) => m.name)) : null;
   const options = g && typing ? filterMembers(members, g.ownerId, typing.query) : [];
   const showing = Boolean(g && typing && options.length && muted !== draft.text);
+  const mentionLeave = useLeave(showing, 160);
+  const lastMention = useRef<{ anchor: { left: number; bottom: number; width: number } | null; options: AssistantSummary[] }>({ anchor: null, options: [] });
+  if (showing && anchor && options.length) lastMention.current = { anchor, options };
   const active = options.length ? pick % options.length : 0;
 
   useLayoutEffect(() => {
@@ -486,10 +927,28 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
   useLayoutEffect(() => {
     const el = ta.current;
     if (!el) return;
-    el.style.height = "auto";
     const max = variant === "mobile" ? 120 : 180;
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
-  }, [draft.text, s.nonce, variant]);
+    const resize = () => {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+    };
+    resize();
+    if (typeof ResizeObserver === "undefined") return;
+    let lastWidth = el.clientWidth;
+    let frame = 0;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== lastWidth) {
+        lastWidth = el.clientWidth;
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(resize);
+      }
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
+  }, [draft.text, s.nonce, variant, convKey]);
 
   useEffect(() => {
     if (s.nonce) ta.current?.focus();
@@ -509,18 +968,27 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
     const el = wrap.current;
     const host = el?.closest<HTMLElement>(".chat");
     if (!el || !host) return;
-    const ro = new ResizeObserver(() => host.style.setProperty("--comp-h", `${el.offsetHeight}px`));
+    let frame = 0;
+    const update = () => host.style.setProperty("--comp-h", `${el.offsetHeight}px`);
+    update();
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
   }, [variant]);
 
   const body = (
     <div className={variant === "mobile" ? "mcomp" : "comp"} ref={compRef} onPaste={onPaste}>
-      <TodoStrip items={todos} jobs={jobs} busy={g ? g.busy.length > 0 : Boolean(a?.busy)} />
+      <TodoStrip items={todos} jobs={jobs} busy={g ? g.busy.length > 0 : Boolean(a?.busy)} onOpenJob={(id) => openJob(id)} />
       {quote.mounted ? (
         <div className={`comp-quote${quote.leaving ? " leaving" : ""}`}>
-          <div className="quote">{draft.quote?.text}</div>
-          <button className="hob-icon-btn" style={{ width: 20, height: 20 }} onClick={() => setQuote(null)} title={t("取消引用")}>
+          <div className="quote">{shownQuote?.text}</div>
+          <button className="hob-icon-btn" style={{ width: 20, height: 20 }} onClick={() => setQuote(null)} title={t("取消引用")} aria-label={t("取消引用")}>
             <Icon name="close" size={13} />
           </button>
         </div>
@@ -554,9 +1022,19 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
           })}
         </div>
       ) : null}
-      {showing && anchor ? createPortal(
-        <div className="mention-pop" style={{ left: anchor.left, bottom: anchor.bottom, width: anchor.width }} role="listbox" aria-label={t("成员")}>
-          {options.map((m, i) => (
+      {mentionLeave.mounted && (showing ? anchor : lastMention.current.anchor) ? createPortal(
+        <div
+          className={`mention-pop${mentionLeave.leaving ? " leaving" : ""}`}
+          style={{
+            left: (showing ? anchor : lastMention.current.anchor)!.left,
+            bottom: (showing ? anchor : lastMention.current.anchor)!.bottom,
+            width: (showing ? anchor : lastMention.current.anchor)!.width,
+            transformOrigin: "bottom left",
+          }}
+          role="listbox"
+          aria-label={t("成员")}
+        >
+          {(showing ? options : lastMention.current.options).map((m, i) => (
             <button
               key={m.id}
               className={`mp-row${i === active ? " on" : ""}`}
@@ -573,62 +1051,122 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
         </div>,
         document.body,
       ) : null}
-      <div className="comp-main">
-        <ComposerPlus g={g} a={a} onFiles={attach} />
-        <textarea
-          ref={ta}
-          className="ta"
-          rows={1}
-          value={draft.text}
-          placeholder={g ? (
-            g.replyMode === "all"
-              ? (g.parentId ? t("在此话题中发言，未点名时全员依次回应") : t("在综合中发言，未点名时全员依次回应"))
-              : (g.parentId ? t("在此话题中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }) : t("在综合中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }))
-          ) : t("给{assistant}发消息", { assistant: sendName(a?.name ?? "") })}
-          onChange={(e) => {
-            setText(e.target.value);
-            setCaret(e.target.selectionStart ?? e.target.value.length);
-          }}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
-          onKeyDown={(e) => {
-            if (showing) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setPick((i) => stepPick(i, 1, options.length));
-                return;
+      {pausedQueue ? (
+        <div className="comp-paused" role="status">
+          <span className="comp-paused-info">
+            <Icon name="pause" size={15} className="comp-paused-ico" />
+            <strong className="comp-paused-tag">{t("已暂停")}</strong>
+            <span className="comp-paused-names">
+              {pausedQueue.length
+                ? queuedMembersLabel(pausedQueue, (id) => s.assistants.find((m) => m.id === id)?.name ?? id)
+                : t("没有等待发言的成员")}
+            </span>
+          </span>
+          <span className="comp-paused-acts">
+            {pausedQueue.length ? (
+              <button
+                type="button"
+                className="hob-btn hob-btn-primary comp-paused-btn"
+                disabled={queueBusy !== null}
+                onClick={() => {
+                  if (!g || queueBusy !== null) return;
+                  setQueueBusy("resume");
+                  void resumeGroupQueue(g.id).finally(() => setQueueBusy(null));
+                }}
+              >
+                {t("继续")}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="hob-btn comp-paused-btn"
+              disabled={queueBusy !== null}
+              onClick={() => {
+                if (!g || queueBusy !== null) return;
+                setQueueBusy("discard");
+                void discardGroupQueue(g.id).finally(() => setQueueBusy(null));
+              }}
+            >
+              {t("放弃")}
+            </button>
+          </span>
+        </div>
+      ) : null}
+      <div className="comp-main comp-island">
+        <div className="comp-input-row">
+          <textarea
+            ref={ta}
+            className="ta"
+            rows={1}
+            value={draft.text}
+            placeholder={g ? (
+              g.replyMode === "all"
+                ? (g.parentId ? t("在此话题中发言，未点名时全员依次回应") : t("在综合中发言，未点名时全员依次回应"))
+                : g.replyMode === "auto"
+                  ? (g.parentId ? t("在此话题中发言，未点名时自动选人回应") : t("在综合中发言，未点名时自动选人回应"))
+                : (g.parentId ? t("在此话题中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }) : t("在综合中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }))
+            ) : t("给{assistant}发消息", { assistant: sendName(a?.name ?? "") })}
+            onChange={(e) => {
+              setText(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+            onKeyDown={(e) => {
+              if (showing) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setPick((i) => stepPick(i, 1, options.length));
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPick((i) => stepPick(i, -1, options.length));
+                  return;
+                }
+                if ((e.key === "Enter" && !e.nativeEvent.isComposing) || e.key === "Tab") {
+                  e.preventDefault();
+                  choose(options[active]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMuted(draft.text);
+                  return;
+                }
               }
-              if (e.key === "ArrowUp") {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                setPick((i) => stepPick(i, -1, options.length));
-                return;
+                void send();
               }
-              if (e.key === "Enter" || e.key === "Tab") {
-                e.preventDefault();
-                choose(options[active]);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setMuted(draft.text);
-                return;
-              }
-            }
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-        />
-        {/* 群里有人正在说话、输入框又是空的：发送键换成停止（有任务在跑不算，那是任务卡的事） */}
-        {(g ? groupSpeaking(s, g).length > 0 : a?.busy) && !has ? (
-          <button className="sendbtn stop" title={t("停止")} onClick={() => void (g ? stopGroup(g.id) : a ? stopAssistant(a.id) : undefined)}>
-            <Icon name="stop" size={18} />
-          </button>
-        ) : (
-          <button className="sendbtn" title={t("发送")} disabled={!has} onClick={() => void send()}>
-            <Icon name="send" size={17} />
-          </button>
-        )}
+            }}
+          />
+        </div>
+        <div className="comp-bar">
+          <div className="comp-tools">
+            <ComposerPlus g={g} a={a} onFiles={attach} />
+            <ComposerModelPill g={g} a={a} />
+            {g ? <ComposerReplyPill g={g} /> : null}
+          </div>
+          <div className="comp-send">
+            {/* 正在说话时始终可以叫停；同时写了草稿也不挤掉停止按钮 */}
+            {canStop ? (
+              <button
+                className={`sendbtn stop${has ? " stop-inline" : ""}`}
+                title={stopping ? t("正在停止…") : t("停止")}
+                aria-label={stopping ? t("正在停止…") : t("停止")}
+                disabled={stopping}
+                onClick={handleStop}
+              >
+                {stopping ? <Icon name="spin" size={16} className="spin" /> : <Icon name="stop" size={18} />}
+              </button>
+            ) : null}
+            {!canStop || has ? (
+              <button className={`sendbtn${has ? " ready" : ""}`} title={t("发送")} aria-label={t("发送")} disabled={!has} onClick={() => void send()}>
+                <Icon name="send" size={17} />
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -661,7 +1199,7 @@ export function ChatPage() {
         <button className="chead-btn left" title={t("返回")} onClick={leaveChat}>
           <Icon name="left" size={22} />
         </button>
-        <ChatHead g={g} a={a} parent={parent} mobile />
+        <ChatHead g={g} a={a} parent={parent} mobile hasRightBtn />
         <button className="chead-btn right" title={g ? t("群信息") : t("助手信息")} onClick={openSheet}>
           <Icon name="more" size={20} />
         </button>

@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   notice: null, updateReady: false, offline: null,
   knowledge: { category: "all", q: "", kind: "", assistantId: "", entries: [{ id: "k-1", name: "测试文档.md", kind: "markdown", path: "/mock/test.md", size: 100, updatedAt: "2026-01-01T00:00:00Z", collections: [] }], collections: [], loading: false, hasMore: false, error: null },
 }));
+vi.mock("./desktop-screens.ts", () => ({ useDesktopScreens: () => ({ screens: [], profiles: {} }) }));
 vi.mock("./store.ts", () => ({
   loadDesktopWidth: () => undefined,
   saveDesktopWidth: vi.fn(),

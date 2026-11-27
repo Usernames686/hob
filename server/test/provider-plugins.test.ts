@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1226,7 +1226,14 @@ export async function P() {
       const dir = join(home, "plugins", id, "providers-runtime", "node_modules", `fake-${id}`);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "package.json"), JSON.stringify({ name: `fake-${id}`, version: "1.0.0", type: "module", main: "./index.mjs" }));
-      writeFileSync(join(dir, "index.mjs"), "export async function P() { return {}; }\n");
+      writeFileSync(join(dir, "index.mjs"), `
+        import { writeFileSync } from "node:fs";
+        import { join } from "node:path";
+        export async function P({ directory }) {
+          writeFileSync(join(directory, "host-cwd"), process.cwd());
+          return {};
+        }
+      `);
       specs.push({ pluginId: id, dataDir: join(home, "plugin-data", id), packages: [{ package: `fake-${id}`, dir }] });
       await host.syncIfRunning();
       await host.ensureStarted();
@@ -1234,7 +1241,8 @@ export async function P() {
     }
     expect(new Set(pids).size).toBe(3);
     expect(pids.map(alive)).toEqual([false, false, true]);
-    expect(readlinkSync(`/proc/${pids[2]}/cwd`)).not.toContain(join(home, "system"));
+    const hostCwd = readFileSync(join(home, "plugin-data", "c", "host-cwd"), "utf8");
+    expect(realpathSync(hostCwd)).not.toContain(join(realpathSync(home), "system"));
     specs[2].packages[0].version = "2.0.0";
     await host.syncIfRunning();
     const versionPid = host.statusView().pid!;

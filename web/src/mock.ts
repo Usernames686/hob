@@ -5,9 +5,11 @@ import type {
   AssistantSummary,
   Bootstrap,
   Delegation,
+  DesktopScreen,
   DesktopView,
   Draft,
   Group,
+  GroupArtifact,
   GroupItem,
   GroupItemsPage,
   GroupSummary,
@@ -21,9 +23,12 @@ import type {
   JobsPage,
   JobStep,
   FileMeta,
+  LocalMemoryEntry,
+  LocalMemoryView,
   LoreTestResult,
   MemoryConfig,
   MemoryProvider,
+  ScratchpadEntry,
   Profile,
   Routine,
   RoutineRun,
@@ -60,8 +65,12 @@ import { defaultSearch } from "../../shared/search.ts";
 import { knowledgeGroup, type KnowledgeCollection, type KnowledgeEntry } from "../../shared/knowledge.ts";
 import type { PluginLoginView, PluginView } from "../../shared/types.ts";
 import type { AssistantSkill } from "../../shared/skills.ts";
+import { assistantAbilities, assistantDetails, assistantGreeting, assistantNameError, assistantNameTaken, assistantSlugBase, manualAssistantSprite } from "../../shared/assistant-create.ts";
 import { ApiError, type HobApi } from "./api.ts";
-import { currentLocale } from "../../shared/i18n.ts";
+import { currentLocale, t } from "../../shared/i18n.ts";
+import { artifactNameKey, MAX_ARTIFACT_BYTES, normalizeArtifactName } from "../../shared/group-artifact.ts";
+import { formatConversationMarkdown, safeExportFilename } from "../../shared/export-markdown.ts";
+import { attachmentName } from "../../shared/media.ts";
 import { normalizeThinkingMap, thinkingPlan } from "../../shared/thinking.ts";
 import { GALLERY, galleryRecords } from "./mock-cards-gallery.ts";
 
@@ -2959,6 +2968,17 @@ export function createMock(scene: SceneId = "s1"): HobApi {
   const mockProfileMissing = (profile: NonNullable<PluginView["profiles"]>[number]) => profile.missing;
 
   const groupRules: Record<string, Rule[]> = {};
+  const artifactsByGroup = new Map<string, Map<string, GroupArtifact>>();
+  const artifactsOf = (id: string) => {
+    if (!db.groups.some((group) => group.id === id)) throw new ApiError(404, "群不存在。");
+    const artifacts = artifactsByGroup.get(id) ?? new Map<string, GroupArtifact>();
+    artifactsByGroup.set(id, artifacts);
+    return artifacts;
+  };
+  const artifactKeyOf = (name: string) => {
+    try { return artifactNameKey(normalizeArtifactName(name)); }
+    catch (error) { throw new ApiError(400, error instanceof Error ? error.message : String(error)); }
+  };
   if (scene === "g-owns" || scene === "g-owns-dark") {
     const group = db.groups.find((item) => item.id === "g-dev")!;
     
@@ -3027,7 +3047,10 @@ export function createMock(scene: SceneId = "s1"): HobApi {
   const assistant = (id: string) => db.assistants.find((a) => a.id === id);
   /** 模拟模式里的记忆设置：没配 Lore 时缺省本地记忆。 */
   const keys = new Set<string>(["anthropic", "my-proxy"]);
-  let desktop = clone(DESKTOP_VIEWS[desktopMockScene()]);
+  const desktopScene = desktopMockScene();
+  let desktop = clone(DESKTOP_VIEWS[desktopScene]);
+  const hobScreen = (running: boolean): DesktopScreen => ({ id: "hob", running, browserRunning: running, viewers: 0, lastActiveAt: null });
+  let screens = desktopScene === "ready" || desktopScene === "deployed" ? [hobScreen(true)] : [];
   const providersView = (): ProvidersView => ({
     providers: db.settings.settings.providers.map((provider) => ({ ...provider, keyConfigured: keys.has(provider.id) })),
     ...(mockPluginProviderSummaries.length ? { pluginProviders: clone(mockPluginProviderSummaries) } : {}),
@@ -3046,6 +3069,50 @@ export function createMock(scene: SceneId = "s1"): HobApi {
     providerExplicit: false,
     lorePlugin: "1.12.5",
     lore: { configured: false, baseUrl: null, source: "none", tokenConfigured: false },
+  };
+  let mockMemSeq = 10;
+  const mockLocalMemory: {
+    longTerm: LocalMemoryEntry[];
+    scratchpad: ScratchpadEntry[];
+    daily: Record<string, LocalMemoryEntry[]>;
+  } = {
+    longTerm: [
+      { id: "lt-0-a1b2c3d4", text: "回复尽量精简直接，日期和时间一律用 24 小时制。", updatedAt: "2026-11-26 09:15:00", source: "user" },
+      { id: "lt-1-e5f60718", text: "主力开发环境为 macOS + TypeScript + Vite，偏好简洁克制的浅暖灰界面风格。", updatedAt: "2026-11-25 18:40:12", source: "9f2a4c10" },
+      { id: "lt-2-23456789", text: "早间科技简报不需要融资类快讯，重点看开源工具和 AI 工程实践。", updatedAt: "2026-11-24 08:20:05", source: "user" },
+    ],
+    scratchpad: [
+      { id: "sp-2-11223344", text: "周六前把 NAS 照片目录做一次异地冷备", done: false, updatedAt: "2026-11-26 11:05:00" },
+      { id: "sp-4-55667788", text: "整理下个月的月度复盘模板", done: false, updatedAt: "2026-11-26 15:20:00" },
+      { id: "sp-6-99aabbcc", text: "核对 Claude Code 本机登录状态", done: true, updatedAt: "2026-11-25 10:12:00" },
+    ],
+    daily: {
+      "2026-11-26": [
+        { id: "dy-0-10101010", text: "确认了新项目的白板文档命名规范：统一使用简洁中文或 kebab-case 加 .md 后缀。", updatedAt: "2026-11-26 16:45:00", source: "9f2a4c10" },
+        { id: "dy-1-20202020", text: "把每周一早上 9 点的周报草稿定时任务改成了提前到周日晚 20:00。", updatedAt: "2026-11-26 10:30:00", source: "user" },
+      ],
+      "2026-11-25": [
+        { id: "dy-0-30303030", text: "排查完反向代理超时问题，SSE 心跳间隔保持 15 秒最稳定。", updatedAt: "2026-11-25 21:18:00", source: "4c8e12a1" },
+      ],
+    },
+  };
+  const mockLocalMemoryView = (requestedDate?: string): LocalMemoryView => {
+    const dailyDates = Object.keys(mockLocalMemory.daily)
+      .filter((date) => (mockLocalMemory.daily[date]?.length ?? 0) > 0)
+      .sort((a, b) => b.localeCompare(a));
+    const dailyDate = requestedDate ?? dailyDates[0];
+    return {
+      longTerm: clone(mockLocalMemory.longTerm),
+      scratchpad: clone(mockLocalMemory.scratchpad),
+      dailyDates,
+      ...(dailyDate ? { dailyDate } : {}),
+      daily: dailyDate ? clone(mockLocalMemory.daily[dailyDate] ?? []) : [],
+    };
+  };
+  const mockNowStamp = () => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   };
   /** 模拟模式里已经订阅的设备：看图用的假设备。 */
   const devices: PushView["devices"] = [
@@ -3122,6 +3189,17 @@ export function createMock(scene: SceneId = "s1"): HobApi {
   function emitGroup(groupId: string) {
     const group = db.groups.find((g) => g.id === groupId);
     if (group) emit({ type: "group", group: clone(group) });
+  }
+
+  const rewindEpochs = new Map<string, number>();
+  function rewindItems(target: "assistant" | "group", id: string, beforeItemId: string, list?: Item[]) {
+    const index = list?.findIndex((item) => item.id === beforeItemId) ?? -1;
+    if (!list || index < 0) throw new ApiError(404, "条目不存在");
+    const [first, ...rest] = list.splice(index);
+    const key = `${target}:${id}`;
+    rewindEpochs.set(key, (rewindEpochs.get(key) ?? 0) + 1);
+    emit({ type: "conversation-rewound", target, id });
+    return { ok: true as const, removedCount: 1 + rest.length, ...(first?.kind === "user" ? { restoredText: first.text } : {}) };
   }
 
   /** 消耗页的价格：默认价 + 设置里改过的。 */
@@ -3378,7 +3456,7 @@ export function createMock(scene: SceneId = "s1"): HobApi {
     deleteSkill: async () => {},
     rollbackGeneralSkill: async (name) => ({ name, title: name, description: "回退后的技能", path: `/skills/${name}/SKILL.md`, version: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), uses: 0, enabled: true }),
     desktop: async () => clone(desktop),
-    desktopScreens: async () => ({ screens: desktopMockScene() === "failed" ? [] : [{ id: "hob", running: true, browserRunning: true, viewers: 0, lastActiveAt: null }], profiles: { hob: "hob" } }),
+    desktopScreens: async () => ({ screens: clone(screens), profiles: { hob: "hob" } }),
     saveDesktop: async (body) => {
       desktop = { ...desktop, revision: desktop.revision + 1, url: body.url, enabled: body.enabled, tokenConfigured: desktop.tokenConfigured || Boolean(body.token) };
       return clone(desktop);
@@ -3692,6 +3770,68 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       };
       return clone({ ...memory, revision: db.settings.revision });
     },
+    memoryEntries: async (date) => mockLocalMemoryView(date),
+    addMemoryEntry: async (body) => {
+      const text = body.text.trim();
+      if (!text) throw new ApiError(400, "记忆内容不能为空");
+      const stamp = mockNowStamp();
+      if (body.target === "scratchpad") {
+        mockLocalMemory.scratchpad.push({
+          id: `sp-${++mockMemSeq}-mock`,
+          text: text.replace(/[\r\n]+/g, " "),
+          done: false,
+          updatedAt: stamp,
+        });
+      } else {
+        mockLocalMemory.longTerm.push({
+          id: `lt-${++mockMemSeq}-mock`,
+          text,
+          updatedAt: stamp,
+          source: "user",
+        });
+      }
+      return mockLocalMemoryView();
+    },
+    updateMemoryEntry: async (id, body) => {
+      const stamp = mockNowStamp();
+      if (body.target === "scratchpad") {
+        const entry = mockLocalMemory.scratchpad.find((item) => item.id === id);
+        if (!entry) throw new ApiError(404, "记忆条目不存在，可能已被修改");
+        if (body.text !== undefined) entry.text = body.text.replace(/[\r\n]+/g, " ").trim();
+        if (body.done !== undefined) entry.done = body.done;
+      } else {
+        const entry = mockLocalMemory.longTerm.find((item) => item.id === id);
+        if (!entry) throw new ApiError(404, "记忆条目不存在，可能已被修改");
+        if (!body.text?.trim()) throw new ApiError(400, "记忆内容不能为空");
+        entry.text = body.text.trim();
+        entry.updatedAt = stamp;
+        entry.source = "user";
+      }
+      return mockLocalMemoryView();
+    },
+    deleteMemoryEntry: async (id, target, date) => {
+      if (target === "scratchpad") {
+        const idx = mockLocalMemory.scratchpad.findIndex((item) => item.id === id);
+        if (idx < 0) throw new ApiError(404, "记忆条目不存在，可能已被修改");
+        mockLocalMemory.scratchpad.splice(idx, 1);
+      } else if (target === "daily") {
+        const list = date ? mockLocalMemory.daily[date] : undefined;
+        const idx = list ? list.findIndex((item) => item.id === id) : -1;
+        if (!list || idx < 0) throw new ApiError(404, "记忆条目不存在，可能已被修改");
+        list.splice(idx, 1);
+        if (list.length === 0 && date) delete mockLocalMemory.daily[date];
+        return mockLocalMemoryView(list.length > 0 ? date : undefined);
+      } else {
+        const idx = mockLocalMemory.longTerm.findIndex((item) => item.id === id);
+        if (idx < 0) throw new ApiError(404, "记忆条目不存在，可能已被修改");
+        mockLocalMemory.longTerm.splice(idx, 1);
+      }
+      return mockLocalMemoryView();
+    },
+    clearDoneScratchpad: async () => {
+      mockLocalMemory.scratchpad = mockLocalMemory.scratchpad.filter((item) => !item.done);
+      return mockLocalMemoryView();
+    },
     items: async (assistantId) => ({
       items: clone(db.items[assistantId] ?? []),
       approvals: clone(Object.values(db.approvals)),
@@ -3701,6 +3841,32 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       cards: clone(Object.values(db.cards)),
       hasMore: false,
     }),
+    exportAssistant: async (assistantId) => {
+      const a = assistant(assistantId);
+      if (!a) throw new ApiError(404, "助手不存在");
+      const messages = (db.items[assistantId] ?? []).flatMap((item) => {
+        if (item.kind !== "user" && item.kind !== "assistant") return [];
+        const files = item.kind === "user" && item.files?.length ? item.files.map(attachmentName) : undefined;
+        if (!item.text.trim() && !files?.length) return [];
+        return [{
+          speaker: item.kind === "user" ? (item.from ? item.from.name : t("用户")) : a.name,
+          at: item.at.slice(0, 19).replace("T", " "),
+          text: item.text,
+          ...(item.quote?.text ? { quote: item.quote.text } : {}),
+          ...(files ? { files } : {}),
+        }];
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        filename: safeExportFilename(a.name, today),
+        content: formatConversationMarkdown({
+          title: a.name,
+          subtitle: a.duty || undefined,
+          exportedAt: mockNowStamp(),
+          messages,
+        }),
+      };
+    },
     profile: async (assistantId) => {
       const a = assistant(assistantId);
       if (!a) throw new Error(`没有这个助手：${assistantId}`);
@@ -3737,7 +3903,9 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       pushItem(assistantId, item);
       touch(assistantId, body.text);
       setAssistant(assistantId, { busy: true });
+      const epoch = rewindEpochs.get(`assistant:${assistantId}`);
       setTimeout(() => {
+        if (rewindEpochs.get(`assistant:${assistantId}`) !== epoch) return;
         pushItem(assistantId, {
           kind: "assistant",
           id: uid("mock-a"),
@@ -3750,7 +3918,57 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       return { item };
     },
     stopAssistant: async (assistantId) => setAssistant(assistantId, { busy: false }),
+    rewindAssistant: async (id, beforeItemId) => {
+      if (!assistant(id)) throw new ApiError(404, "助手不存在。");
+      const result = rewindItems("assistant", id, beforeItemId, db.items[id]);
+      const last = db.items[id]?.findLast((item) => "text" in item);
+      setAssistant(id, { busy: false, activity: null, suggestions: undefined, last: last && "text" in last ? { at: last.at, text: last.text } : undefined });
+      return result;
+    },
     markRead: async (assistantId) => setAssistant(assistantId, { unread: 0 }),
+    groupArtifacts: async (id) => ({
+      artifacts: [...artifactsOf(id).values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name))
+        .map(({ content: _content, ...meta }) => meta),
+    }),
+    groupArtifact: async (id, name) => {
+      const artifact = artifactsOf(id).get(artifactKeyOf(name));
+      if (!artifact) throw new ApiError(404, t("文档不存在"));
+      return { artifact: clone(artifact) };
+    },
+    saveGroupArtifact: async (id, name, body) => {
+      const artifacts = artifactsOf(id);
+      const key = artifactKeyOf(name);
+      const previous = artifacts.get(key);
+      const filename = previous?.name ?? normalizeArtifactName(name);
+      if (typeof body?.content !== "string") throw new ApiError(400, t("文档内容必须是字符串"));
+      if (body.expectedVersion !== undefined && previous && previous.version !== body.expectedVersion) {
+        throw new ApiError(409, t("文档已在别处更新（当前 v{version}），请刷新后再保存", { version: previous.version }));
+      }
+      const size = new TextEncoder().encode(body.content).length;
+      if (size > MAX_ARTIFACT_BYTES) throw new ApiError(400, t("文档不能超过 512 KiB"));
+      const artifact: GroupArtifact = {
+        name: filename, title: body.title?.trim() || previous?.title || filename.slice(0, -3),
+        content: body.content, updatedBy: "user", updatedAt: new Date().toISOString(), version: (previous?.version ?? 0) + 1, size,
+      };
+      artifacts.set(key, artifact);
+      const group = db.groups.find((g) => g.id === id);
+      if (group) {
+        group.artifactCount = artifacts.size || undefined;
+        emitGroup(id);
+      }
+      emit({ type: "group-artifacts", groupId: id });
+      return { artifact: clone(artifact) };
+    },
+    deleteGroupArtifact: async (id, name) => {
+      const artifacts = artifactsOf(id);
+      if (!artifacts.delete(artifactKeyOf(name))) throw new ApiError(404, t("文档不存在"));
+      const group = db.groups.find((g) => g.id === id);
+      if (group) {
+        group.artifactCount = artifacts.size || undefined;
+        emitGroup(id);
+      }
+      emit({ type: "group-artifacts", groupId: id });
+    },
     groupProfile: async (id) => {
       const selected = db.groups.find((g) => g.id === id);
       const group = db.groups.find((g) => g.id === (selected?.parentId ?? id));
@@ -3900,7 +4118,7 @@ export function createMock(scene: SceneId = "s1"): HobApi {
         group.models = models;
       }
       if (patch.name !== undefined) group.name = patch.name.trim() || group.name;
-      if (patch.replyMode === "owner" || patch.replyMode === "all") group.replyMode = patch.replyMode;
+      if (patch.replyMode === "owner" || patch.replyMode === "all" || patch.replyMode === "auto") group.replyMode = patch.replyMode;
       if (patch.purpose !== undefined) {
         group.purpose = patch.purpose;
         for (const topic of db.groups.filter((g) => g.parentId === groupId)) topic.purpose = patch.purpose;
@@ -3939,6 +4157,35 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       cards: clone(Object.values(db.cards).filter((card) => card.groupId === groupId)),
       hasMore: false,
     }),
+    exportGroup: async (groupId) => {
+      const g = db.groups.find((item) => item.id === groupId);
+      if (!g) throw new ApiError(404, "群不存在");
+      const parent = g.parentId ? db.groups.find((item) => item.id === g.parentId) : undefined;
+      const messages = (db.groupItems[groupId] ?? []).flatMap((item) => {
+        if (item.kind !== "user" && item.kind !== "assistant") return [];
+        const files = item.kind === "user" && item.files?.length ? item.files.map(attachmentName) : undefined;
+        if (!item.text.trim() && !files?.length) return [];
+        const speaker = item.speaker === "user" ? t("用户") : (db.assistants.find((a) => a.id === item.speaker)?.name ?? item.speaker);
+        return [{
+          speaker,
+          at: item.at.slice(0, 19).replace("T", " "),
+          text: item.text,
+          ...(item.quote?.text ? { quote: item.quote.text } : {}),
+          ...(files ? { files } : {}),
+        }];
+      });
+      const title = parent ? `${parent.name} · ${g.name}` : g.name;
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        filename: safeExportFilename(title, today),
+        content: formatConversationMarkdown({
+          title,
+          subtitle: parent ? (g.closeNote || parent.purpose || undefined) : (g.purpose || undefined),
+          exportedAt: mockNowStamp(),
+          messages,
+        }),
+      };
+    },
     sendGroupMessage: async (groupId, body) => {
       const group = db.groups.find((g) => g.id === groupId);
       if (!group) throw new ApiError(404, "群不存在。");
@@ -3967,7 +4214,9 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       group.busy = [speaker];
       emitGroup(groupId);
       emit({ type: "group-activity", groupId, speaker, activity: { state: "thinking", label: "正在思考…" } });
+      const epoch = rewindEpochs.get(`group:${groupId}`);
       setTimeout(() => {
+        if (rewindEpochs.get(`group:${groupId}`) !== epoch) return;
         const reply: GroupItem = { kind: "assistant", id: uid("g"), at: new Date().toISOString(), text: `收到，我看一下。`, speaker };
         list.push(reply);
         emit({ type: "group-item", groupId, item: clone(reply) });
@@ -3994,6 +4243,50 @@ export function createMock(scene: SceneId = "s1"): HobApi {
       (db.groupItems[groupId] ??= []).push(note);
       emit({ type: "group-item", groupId, item: clone(note) });
       for (const speaker of stopped) emit({ type: "group-activity", groupId, speaker, activity: null });
+    },
+    groupQueueAction: async (groupId, action) => {
+      const group = db.groups.find((g) => g.id === groupId);
+      if (!group) throw new ApiError(404, "群不存在。");
+      if (!group.queue?.paused) return { ok: true as const, applied: false };
+      const pending = group.queue.pending;
+      delete group.queue;
+      emitGroup(groupId);
+      return { ok: true as const, applied: action === "discard" || pending.length > 0 };
+    },
+    rewindGroup: async (id, beforeItemId) => {
+      const group = db.groups.find((entry) => entry.id === id);
+      if (!group) throw new ApiError(404, "群不存在。");
+      const result = rewindItems("group", id, beforeItemId, db.groupItems[id]);
+      const last = db.groupItems[id]?.findLast((item) => "text" in item);
+      Object.assign(group, { busy: [], activity: {}, suggestions: undefined, last: last && "text" in last ? { at: last.at, text: last.text, speaker: last.speaker } : undefined });
+      emitGroup(id);
+      return result;
+    },
+    createAssistant: async (body) => {
+      const problem = assistantNameError(body?.name);
+      if (problem) throw new ApiError(400, problem);
+      const name = body.name.trim();
+      const id = assistantSlugBase(name) || uid("a-");
+      if (assistantNameTaken(db.assistants, name, id)) throw new ApiError(409, t("已存在名称为「{name}」的助手", { name }));
+      let created: AssistantSummary;
+      const at = new Date().toISOString();
+      try {
+        const details = assistantDetails(body);
+        const cwd = body.cwd?.trim();
+        if (cwd && !/^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/])/.test(cwd)) throw new Error(t("工作目录必须填写绝对路径（如 /workspace/app）。"));
+        created = {
+          ...details, id, duty: details.duty || t("专属助手"),
+          sprite: manualAssistantSprite(body.sprite, db.assistants.map(a => a.sprite)), abilities: assistantAbilities(body.abilities),
+          ...(cwd ? { cwd } : {}), primary: false, pinned: false, hidden: false, notify: true, createdAt: at, busy: false, unread: 0,
+        };
+      } catch (error) { throw new ApiError(400, error instanceof Error ? error.message : String(error)); }
+      db.assistants.push(created);
+      db.rules[id] = [];
+      pushItem(id, { kind: "note", id: uid("mock-n"), at, icon: "split", text: t("由你手动创建") });
+      const greeting = assistantGreeting(name, body.duty?.trim() ? created.duty : undefined);
+      pushItem(id, { kind: "assistant", id: uid("mock-a"), at, text: greeting });
+      touch(id, greeting);
+      return { assistant: clone(created) };
     },
     patchAssistant: async (assistantId, patch) => {
       if (!assistant(assistantId)) throw new ApiError(404, "助手不存在。");
@@ -4263,6 +4556,12 @@ export function createMock(scene: SceneId = "s1"): HobApi {
     visibility: async () => {},
     events: (handlers) => {
       listeners.add(handlers.onEvent);
+      const onDesktop = (event: Event) => {
+        screens = [hobScreen(Boolean((event as CustomEvent).detail))];
+        handlers.onEvent({ type: "desktop-screens", screens });
+      };
+      globalThis.addEventListener?.("hob-mock-desktop", onDesktop);
+      handlers.onOpen?.();
       const timers: ReturnType<typeof setTimeout>[] = [];
       if (scene === "provider-install-progress") {
         timers.push(setTimeout(() => emit({
@@ -4298,6 +4597,7 @@ export function createMock(scene: SceneId = "s1"): HobApi {
         }, 7500));
       }
       return () => {
+        globalThis.removeEventListener?.("hob-mock-desktop", onDesktop);
         timers.forEach(clearTimeout);
         listeners.delete(handlers.onEvent);
       };

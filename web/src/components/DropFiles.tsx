@@ -10,13 +10,21 @@ const IDLE = 1500;
 
 export function DropFiles() {
   const s = useApp();
-  const a = s.assistants.find((x) => x.id === s.sel);
+  const g = s.gsel ? s.groups.find((x) => x.id === s.gsel) : undefined;
+  const a = g ? undefined : s.assistants.find((x) => x.id === s.sel);
+  const active = s.page === "main" && Boolean(g || a);
   const [over, setOver] = useState(false);
   // dragenter / dragleave 在每个子元素上都会各来一次，计数归零才算真的离开窗口
   const depth = useRef(0);
   const idle = useRef(0);
 
   useEffect(() => {
+    if (!active) {
+      depth.current = 0;
+      clearTimeout(idle.current);
+      setOver(false);
+      return;
+    }
     const wake = () => {
       setOver(true);
       clearTimeout(idle.current);
@@ -66,14 +74,15 @@ export function DropFiles() {
       window.removeEventListener("dragover", onOver, opts);
       window.removeEventListener("drop", onDrop, opts);
     };
-  }, []);
+  }, [active]);
 
-  if (!over) return null;
+  if (!active || !over) return null;
+  const targetName = g?.name ?? a?.name;
   return (
     <div className="dropmask" role="status">
       <div className="dropcard">
         <div className="t">{t("松开即可上传")}</div>
-        <div className="d">{a ? t("文件将加入与 {name} 的输入框，发送时一并发送", { name: a.name }) : t("文件将加入输入框，发送时一并发送")}</div>
+        <div className="d">{targetName ? t("文件将加入与 {name} 的输入框，发送时一并发送", { name: targetName }) : t("文件将加入输入框，发送时一并发送")}</div>
       </div>
     </div>
   );

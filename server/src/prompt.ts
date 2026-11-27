@@ -59,22 +59,23 @@ function directWorkLine(abilities: Abilities = { exec: true, write: true, image:
 }
 
 /** 群会话的开头：群名、成员和职责、群里怎么轮到你。 */
-export function groupPromptLine(store: Store, group: Group): string {
+export function groupPromptLine(store: Store, group: Group, openTurn = group.replyMode === "auto" || group.replyMode === "all"): string {
   const members = group.members.flatMap((id) => {
     const assistant = store.assistant(id);
     return assistant ? [`${assistant.name}（${id}，${assistant.duty}${id === group.ownerId ? "，群主" : ""}）`] : [];
   });
-  return `你在群「${group.name}」里，群里有用户和这几位助手：${members.join("、")}。这个群的职责：${group.purpose}。群里的消息不都是对你说的：@ 你、或者回复你的消息时才轮到你，每条消息前面写着是谁说的。你说的话群里所有人都看得到，所以只说这件事需要的。要别的成员接手，就 @ 他，说清要他做什么。`;
+  return `你在群「${group.name}」里，群里有用户和这几位助手：${members.join("、")}。这个群的职责：${group.purpose}。群里的消息不都是对你说的：@ 你、或者回复你的消息时${openTurn ? "就会" : "才"}轮到你，每条消息前面写着是谁说的。你说的话群里所有人都看得到，所以只说这件事需要的。需要别的成员在群里直接发言、讨论或接力时，在回复里直接 @ 他的名字并说清要他做什么，平台会自动轮到他以自己的身份在群里发言。一次 @ 多位成员时，他们按点名顺序依次发言。当前群或话题的需求、方案和交付物可以用 write_artifact 和 read_artifact 在共享白板上维护。`;
 }
 
 /** 全员回应的群和话题：接在 groupPromptLine 后面，每个成员（含群主）都有。 */
-export const GROUP_ALL_REPLY_LINE = "这个群设成了全员回应：用户没点名的消息，群主先回，其他成员按成员顺序依次轮到，前面的人说过什么你都看得到。";
+export const GROUP_ALL_REPLY_LINE = "这个群设成了全员回应：用户希望每位成员都参与回应。用户没点名的消息，群主先回，其他成员按成员顺序依次轮到，前面的人说过什么你都看得到。轮到你时，请站在你的职责和视角直接回应用户（哪怕是打招呼、表态或简短补充自己的关注点），不要轻易回 NO_REPLY；只有当这件事与你的职责完全无关且确实没有任何需要表达的内容时，才回 NO_REPLY。";
+export const GROUP_AUTO_REPLY_LINE = "这个群设成了自动选人：用户没点名的消息会由系统自动分配给最对口的成员来回应，拿不准时仍由群主接手。轮到你时直接从你的职责切入回应即可。";
 
 /** 群里每个成员都有：前面的人已经说清了就不重复。 */
 export const GROUP_NO_REPLY_LINE = "轮到你时，先看前面的人是不是已经把你要说的说了。你有新的内容，就说出来；别人已经说清了、你再说只是重复，就回 NO_REPLY，这一轮你写的字都不会出现在群里。用户 @ 你、问你的事，照常回答。";
 
 /** 群主多一段：没点名的消息由它接。 */
-export const GROUP_OWNER_LINE = "你是这个群的群主：用户没点名的消息由你接，事情最后也由你给用户一个结论。成员各管一摊，各自带着那一摊的技能，任务交给职责对口的成员，往往比别人执行得更准；所以接到一件事，先想它落在谁的职责里，落在你自己那一摊的就自己处理。请成员执行任务也有代价：每多请一位成员，就多一次交接和等待；一个人能完成的事交给一个人从头做到尾，需要别人把关时再请。互不依赖的事可以同时交给不同的人，有先后的才排队。成员的任务分派给成员：start_job 填它的 assistantId，任务就以它的身份、用它的技能执行。需要核对的，分派给没参与这项任务的成员，核对的人没写过，才看得出执行者自己看不到的地方。";
+export const GROUP_OWNER_LINE = "你是这个群的群主：用户没点名的消息由你接，事情最后也由你给用户一个结论。成员各管一摊，各自带着那一摊的技能，任务交给职责对口的成员，往往比别人执行得更准；所以接到一件事，先想它落在谁的职责里，落在你自己那一摊的就自己处理。请成员执行任务也有代价：每多请一位成员，就多一次交接和等待；一个人能完成的事交给一个人从头做到尾，需要别人把关时再请。互不依赖的事可以同时交给不同的人，有先后的才排队。成员的任务分派给成员：start_job 填它的 assistantId，任务就以它的身份、用它的技能执行。需要核对的，分派给没参与这项任务的成员，核对的人没写过，才看得出执行者自己看不到的地方。注意区分两种协作：start_job 派出的后台任务只向派发者汇报，成员本人不会在群里发言；如果用户希望成员本人直接在群里回复、表态或讨论，直接在你的回复里 @ 成员名字即可，不要用 start_job 再代为转述。需要安排多位成员按序发言、最后由你总结时，优先用 call_members，设 return_to_owner: true。";
 
 /** 话题会话的开头：接在群那段后面，空一行。群名写所属的群，话题名写这个话题。 */
 export function topicPromptLine(hostName: string, topicName: string): string {
@@ -131,6 +132,20 @@ function aboutSection(aboutYou: GeneralSettings["aboutYou"]): string[] {
 
 const SCRIPT_TOOLS_LINE = "在 Hob 里运行的 node 脚本可以用全局对象 tools 调用你能用的工具，包括插件的：await tools.名字({ 参数 })，tools.$list() 列出有哪些。一次要调很多次、要从大量结果里筛出一部分、或者要写成定时检查时，写成脚本：中间结果不进对话，只有你输出的内容回来。只调一两次，直接调工具。";
 
+/** 群主在全员回应或自动选人模式下，对默认职责开头的轻量适配。 */
+function ownerPromptLine(group: Group): string {
+  if (group.replyMode === "auto") {
+    return GROUP_OWNER_LINE.replace("用户没点名的消息由你接，", "自动选人拿不准的消息由你接，");
+  }
+  if (group.replyMode === "all") {
+    return `${GROUP_OWNER_LINE.replace("用户没点名的消息由你接，", "用户没点名的消息会由你先回、其余成员自动按序跟进，")}在全员回应模式下，系统已经会自动依次轮到每位成员，普通全员讨论不需要再用 @ 或 call_members 重复点名。`;
+  }
+  return GROUP_OWNER_LINE;
+}
+
+/** 群内共享待办的补充说明：避免普通成员误清群主维护的共享清单。 */
+const GROUP_TODOS_LINE = "在这个群或话题里，所有成员共用同一份待办（主要由群主维护）：更新时保留其他成员还在推进的项，不要轻易清空别人正在跟进的待办。";
+
 export function buildSystemPrompt(store: Store, assistantId: string, settings: PromptSettings): string {
   const assistant = store.assistant(assistantId);
   if (!assistant) throw new Error(`助手不存在：${assistantId}`);
@@ -141,21 +156,30 @@ export function buildSystemPrompt(store: Store, assistantId: string, settings: P
     if (!group) return routine.assistantId === assistantId && !routine.groupId;
     return store.groupMatches(group.id, routine.groupId);
   });
-  const others = store.assistants().filter((item) => item.id !== assistantId);
+  const others = store.assistants().filter((item) => item.id !== assistantId && !item.hidden);
   const multiple = others.length > 0;
   // 话题是挂在群下面的群：群那段写所属的群，后面接上该话题的开头
   const host = group?.parentId ? store.group(group.parentId) : undefined;
   const introGroup = host ?? group;
+  const isAllReply = group?.replyMode === "all";
+  const isAutoReply = group?.replyMode === "auto";
   const groupIntro = introGroup
     ? [
-      groupPromptLine(store, introGroup),
-      GROUP_NO_REPLY_LINE,
-      ...(group?.replyMode === "all" ? [GROUP_ALL_REPLY_LINE] : []),
+      groupPromptLine(store, introGroup, isAutoReply || isAllReply),
+      ...(isAllReply ? [GROUP_ALL_REPLY_LINE] : [GROUP_NO_REPLY_LINE]),
+      ...(isAutoReply ? [GROUP_AUTO_REPLY_LINE] : []),
       ...(group && host ? [topicPromptLine(host.name, group.name)] : []),
     ].join("\n\n")
     : undefined;
+  const handoverOwnerLine = group && group.parentId && group.handover && !group.handover.result && group.ownerId === assistantId
+    ? `这个话题是「${store.assistant(group.handover.by)?.name ?? group.handover.by}」交给这个群处理的：有成品文件先用 send_file 发到本话题，完成后务必带结论调用 close_topic，结论和已交付的文件会自动回到「${store.assistant(group.handover.by)?.name ?? group.handover.by}」。安排成员复核后会自动交回给你收尾（除非你在 call_members 中设 return_to_owner: false）。`
+    : undefined;
   const ownerIntro = group && group.ownerId === assistantId
-    ? [GROUP_OWNER_LINE, ...(group.parentId ? [] : [TOPIC_OPEN_LINE]), ROUTINE_GROUP_OWNER_LINE].join("\n\n")
+    ? [
+      ownerPromptLine(group),
+      ...(handoverOwnerLine ? [handoverOwnerLine] : []),
+      ...(group.parentId ? [] : [TOPIC_OPEN_LINE]), ROUTINE_GROUP_OWNER_LINE,
+    ].join("\n\n")
     : undefined;
   const lines = assistant.primary ? [`你是「${assistant.name}」，用户的主助手。${groupIntro ?? "用户在一对一的对话里和你合作，每条消息都是对你说的。"}`, ...(ownerIntro ? [ownerIntro] : [])] : [
     `你是「${assistant.name}」，用户的助手，负责${assistant.duty}。`,
@@ -189,7 +213,11 @@ export function buildSystemPrompt(store: Store, assistantId: string, settings: P
     "", "同一件事的补充、纠正和追问，交给原来那个任务（reply_job），它记得之前的上下文和目录，结束了也能接着做。任务问你问题时，你知道答案就直接回它；需要用户拿主意的，用 ask_user 问用户，拿到答复再回它。",
     "", "任务派出去或者补充交代以后，结果会自己回到这里：它做完、受阻、或者有问题要问，你都会收到。所以该派的派完、该告诉用户的说完，就可以结束这一轮，这就是在等。等的时候不用反复查看：查看不会让任务更快，每查一次你都要把整段对话重读一遍。告诉用户的是已经安排了什么，等结果真的回来再说做完了。",
     "", "任务运行多久也归你管。任务超过预计时间会先收到提醒；超过预计两倍时你也会收到提醒，这时用 check_job 查看它在执行什么：方向对就让它继续，偏离方向就纠正或者停止它。告不告诉用户，看会不会耽误用户：用户说过什么时候要用，照现在的进度赶不上，或者还要等很久、该让用户决定还等不等，就告诉用户还要多久、有什么办法；只是比预计慢一些，不耽误什么，任务卡上一直显示着用了多久，用户看得到。",
-    "", group && group.ownerId === assistantId ? "" : group ? `定时任务到执行时间会交给${group.ownerId === assistantId ? "你" : "群主"}处理，每次都花一次模型调用。只是查看有没有新情况、而且能用固定办法判断的，配上检查脚本：没变化就什么都不做，有变化才提醒用户或交给${group.ownerId === assistantId ? "你" : "群主"}。要读懂内容才能判断有没有新情况的，不配脚本，每次都交给${group.ownerId === assistantId ? "你" : "群主"}。` : "定时任务到执行时间会交给你处理，每次都花一次模型调用。只是查看有没有新情况、而且能用固定办法判断的，配上检查脚本：没变化就什么都不做，有变化才提醒用户或交给你。要读懂内容才能判断有没有新情况的，不配脚本，每次都交给你。",
+    "", group && group.ownerId === assistantId
+      ? "定时任务到执行时间会交给你处理，每次都花一次模型调用。只是查看有没有新情况、而且能用固定办法判断的，配上检查脚本：没变化就什么都不做，有变化才提醒用户或交给你。要读懂内容才能判断有没有新情况的，不配脚本，每次都交给你。"
+      : group
+        ? "定时任务到执行时间会交给群主处理，每次都花一次模型调用。只是查看有没有新情况、而且能用固定办法判断的，配上检查脚本：没变化就什么都不做，有变化才提醒用户或交给群主。要读懂内容才能判断有没有新情况的，不配脚本，每次都交给群主。"
+        : "定时任务到执行时间会交给你处理，每次都花一次模型调用。只是查看有没有新情况、而且能用固定办法判断的，配上检查脚本：没变化就什么都不做，有变化才提醒用户或交给你。要读懂内容才能判断有没有新情况的，不配脚本，每次都交给你。",
     "", "## 什么时候需要执行前确认",
     "用户定的规则写了执行前确认的事，使用 ask_user 确认。规则没写到、但做了就撤不回的事，比如删除数据、对外发送、付钱，也先用 ask_user 确认，卡片里写清后果；用户定了直接执行的，就直接执行。其余的事按你对用户的了解办下去，把你的假设说出来，用户随时能纠正，询问太多反而耽误事。用户说以后某类事直接执行或者需要确认，用 set_rule 记成规则。",
     "",
@@ -236,6 +264,7 @@ export function buildSystemPrompt(store: Store, assistantId: string, settings: P
   const disabled = [settings.memory === "off" && "记忆", !settings.searchEnabled && "联网搜索", !settings.imageEnabled && "图像生成", !settings.desktopEnabled && "云桌面"].filter(Boolean);
   if (disabled.length) lines.push(`未启用的能力：${disabled.join("、")}，在 设置 里开。`);
   lines.push(TODOS_LINE);
+  if (group) lines.push(GROUP_TODOS_LINE);
   lines.push(...aboutSection(settings.aboutYou));
   const groupRules = group ? store.groupRules(group.id) : [];
   if (globalRules.length || groupRules.length || rules.length) {
@@ -315,7 +344,8 @@ export function buildWorkerPrompt(store: Store, jobId: string, settings: PromptS
     if (cannot.length) lines.push(`不能做：${cannot.join("、")}。`);
   }
   lines.push(...aboutSection(settings.aboutYou));
-  const always = [...globalRules, ...groupRules].filter((rule) => rule.mode === "allow");
+  const allowRules = job.groupId ? [...globalRules, ...groupRules] : [...globalRules, ...ownRules];
+  const always = allowRules.filter((rule) => rule.mode === "allow");
   if (always.length) lines.push("", "## 用户定的规则", ...always.map((rule) => `- ${rule.text}`));
   if (askFirst.length) lines.push("", "## 这些事执行前先用 ask_user 确认", ...askFirst.map((rule) => `- ${rule.text}`));
   const memory = memoryPromptLines(settings.memory);

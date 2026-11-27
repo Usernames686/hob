@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { listenHttp } from "./helpers.ts";
 import { completePluginOAuth, disconnectPluginOAuth, pluginOAuthLoggedIn, pluginOAuthNeedsRelogin, pluginOAuthProvider, startPluginOAuth } from "../src/plugin-oauth.ts";
 
 let server: Server | undefined;
@@ -10,7 +11,6 @@ let home: string | undefined;
 afterEach(async () => { if (server) await new Promise<void>(resolve => server!.close(() => resolve())); if (home) rmSync(home, { recursive: true, force: true }); server = undefined; home = undefined; });
 it("uses configured OAuth scope and authorization parameters and stores and refreshes tokens", async () => {
   home = mkdtempSync(join(tmpdir(), "hob-plugin-oauth-"));
-  const base = "http://127.0.0.1:31802";
   let refreshes = 0;
   let allowRefresh = true;
   server = createServer((request, response) => {
@@ -30,7 +30,7 @@ it("uses configured OAuth scope and authorization parameters and stores and refr
     }
     response.statusCode = 404; response.end("{}");
   });
-  await new Promise<void>((resolve, reject) => { server!.once("error", reject); server!.listen(31802, "127.0.0.1", resolve); });
+  const base = await listenHttp(server);
   const target = { home, id: "mail", service: "mail", url: `${base}/mcp`, config: { clientId: "client", clientSecret: "secret", scope: "read compose", authorizationParams: { access_type: "offline", prompt: "consent" } } };
   const result = await startPluginOAuth(target, "http://localhost:31801/api/plugins/oauth/callback");
   const url = new URL(result.authorizationUrl!);

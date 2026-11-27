@@ -1,6 +1,7 @@
 import type { HobRuntime } from "./runtime.ts";
 import { nowText } from "./time.ts";
 import { sessionOrigin } from "./origin.ts";
+import { artifactsBlockText } from "./group-artifacts.ts";
 import { readTodoBook, sessionTodosPath, todosBlockText, todosReminderText } from "./todos.ts";
 import type { Job } from "../../shared/types.ts";
 
@@ -19,8 +20,13 @@ export function nowBlock(runtime: HobRuntime, assistantId: string, current?: str
     timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(new Date(value));
   const short = (value: string) => Array.from(value).length > 20 ? `${Array.from(value).slice(0, 20).join("")}…` : value;
-  const jobs = runtime.store.jobs().filter((job) => job.assistantId === assistantId);
+  // 群里派给其他成员执行的任务，结果回到派发者（startedBy），所以在派发者的【现在】里列出并标明执行人
+  const jobs = runtime.store.jobs().filter((job) => (job.startedBy ?? job.assistantId) === assistantId);
   const lines = [`【现在】${nowText(timezone, now)}`];
+  if (current) {
+    const whiteboard = artifactsBlockText(runtime.home, current, (speaker) => speaker === "user" ? "用户" : runtime.store.assistant(speaker)?.name ?? speaker, timezone);
+    if (whiteboard) lines.push(whiteboard);
+  }
   // 手上的这份待办：每轮都带给模型，它自己清或换；收起的（旧的那几份）不带，历史不进上下文
   const book = readTodoBook(sessionTodosPath(runtime.home, assistantId, current));
   if (book.items.length) {
@@ -43,7 +49,10 @@ export function nowBlock(runtime: HobRuntime, assistantId: string, current?: str
     const minutes = job.startedAt ? Math.floor((now.getTime() - new Date(job.startedAt).getTime()) / 60_000) : 0;
     return minutes < 1 ? "刚开始" : `运行 ${minutes} 分钟`;
   };
-  const activeLine = (job: Job) => `${job.id}「${short(job.title)}」，${stateOf(job)}`;
+  const assigneeOf = (job: Job) => job.startedBy && job.assistantId !== assistantId
+    ? `（${job.assistantName ?? runtime.store.assistant(job.assistantId)?.name ?? job.assistantId}）`
+    : "";
+  const activeLine = (job: Job) => `${job.id}「${short(job.title)}」${assigneeOf(job)}，${stateOf(job)}`;
   const active = jobs.filter((job) => mine(job.groupId) && ACTIVE.has(job.status)).map(activeLine);
   if (active.length) lines.push(`进行中：${active.join("；")}`);
   const delegations = runtime.store.delegations().filter((item) => item.from === assistantId && (item.status === "running" || item.status === "waiting"))
@@ -55,7 +64,7 @@ export function nowBlock(runtime: HobRuntime, assistantId: string, current?: str
   const names = { done: "已完成", stuck: "受阻", failed: "失败", stopped: "已停止" } as const;
   const recent = jobs.filter((job) => mine(job.groupId) && job.endedAt && !job.routineId && job.status in names && new Date(job.endedAt).getTime() >= now.getTime() - 86_400_000 && new Date(job.endedAt).getTime() <= now.getTime())
     .sort((a, b) => b.endedAt!.localeCompare(a.endedAt!)).slice(0, 5)
-    .map((job) => `${job.id}「${short(job.title)}」${clock(job.endedAt!)} ${names[job.status as keyof typeof names]}`);
+    .map((job) => `${job.id}「${short(job.title)}」${assigneeOf(job)}${clock(job.endedAt!)} ${names[job.status as keyof typeof names]}`);
   if (recent.length) lines.push(`最近结束：${recent.join("；")}`);
   const elsewhereActive = jobs.filter((job) => elsewhere(job.groupId) && ACTIVE.has(job.status)).map((job) => `${originOf(job.groupId)}里 ${activeLine(job)}`);
   if (elsewhereActive.length) lines.push(`别处进行中：${elsewhereActive.join("；")}`);

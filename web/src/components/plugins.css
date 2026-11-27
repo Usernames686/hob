@@ -24,8 +24,8 @@
 .plugin-count { margin: 24px 0 10px; }
 .plugin-icon { width: 46px; height: 46px; border-radius: 12px; background: var(--field); display: grid; place-items: center; color: var(--text3); flex: none; }
 .plugin-icon img { width: 28px; height: 28px; object-fit: contain; }
-.plugin-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; padding: 6px; border-radius: 14px; background: var(--field); overflow: hidden; }
-.plugin-list-row { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 10px 12px; border-radius: 10px; text-align: left; }
+.plugin-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; padding: 6px; border-radius: 16px; background: var(--field); box-shadow: inset 0 0 0 0.5px var(--surface-hairline); overflow: hidden; }
+.plugin-list-row { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background-color var(--t-fast) var(--ease-soft), transform var(--t-mid) var(--ease-in); }
 .plugin-list-row.clickable { cursor: pointer; }
 .plugin-list-row.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .plugin-list-row .info { flex: 1; min-width: 0; }
@@ -60,10 +60,10 @@
 .plugin-identity { position: relative; display: flex; align-items: center; gap: 14px; margin-top: 16px; padding-right: 42px; }
 .plugin-identity .plugin-icon { width: 48px; height: 48px; }
 .plugin-identity-menu { position: absolute; top: 0; right: 0; }
-.plugin-menu { position: absolute; z-index: 4; top: 38px; right: 0; width: 150px; padding: 5px; border-radius: 10px; background: var(--card); box-shadow: 0 8px 28px var(--jump-shadow); }
-.plugin-menu button { display: block; width: 100%; padding: 8px 10px; border-radius: 7px; font-size: 13px; }
-.plugin-menu button:hover { background: var(--field); }
-.plugin-connection { margin-top: 24px; padding: 13px 16px; border-radius: 14px; background: var(--field); }
+.plugin-menu { position: absolute; z-index: 4; top: 38px; right: 0; width: 156px; padding: 6px; border-radius: 14px; background: var(--glass-bg); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); border: 0.5px solid var(--line); box-shadow: inset 0 1px 0 var(--surface-sheen), var(--shadow-md); animation: popup-in var(--t-mid) var(--ease-spring); }
+.plugin-menu button { display: block; width: 100%; padding: 8px 10px; border-radius: 9px; font-size: 13px; }
+.plugin-menu button:hover { background: var(--hover); }
+.plugin-connection { margin-top: 24px; padding: 14px 16px; border-radius: 16px; background: var(--field); box-shadow: inset 0 0 0 0.5px var(--surface-hairline); }
 .plugin-connection.warn { background: color-mix(in srgb, var(--accent) 10%, var(--field)); }
 .plugin-connection.bad { background: color-mix(in srgb, var(--danger) 10%, var(--field)); }
 .plugin-connection-top { display: flex; align-items: center; gap: 10px; min-height: 22px; }
@@ -98,7 +98,7 @@
 .plugin-tools-head { display: flex; align-items: baseline; gap: 12px; }
 .plugin-tools-head h2 { margin: 0; }
 .plugin-filter { display: inline-flex; gap: 4px; margin-left: auto; padding: 0; background: transparent; }
-.plugin-filter button { padding: 5px 9px; border-radius: 8px; background: var(--field); color: var(--text2); font-size: 12px; }
+.plugin-filter button { padding: 5px 11px; border-radius: 999px; background: var(--field); color: var(--text2); font-size: 12px; }
 .plugin-filter button.on { background: var(--text); color: var(--bg); }
 .plugin-tool-more { margin-top: 2px; }
 .plugin-tool-more .disclosure-row { min-height: 42px; }
@@ -144,21 +144,22 @@
 .plugin-search { margin-top: 20px; }
 .home-filters.plugin-category-filter { padding: 12px 0 0; }
 .plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 14px; }
-.plugin-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px; border-radius: 14px; background: var(--field); text-align: left; }
+.plugin-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px; border-radius: 16px; background: var(--field); box-shadow: inset 0 0 0 0.5px var(--surface-hairline); text-align: left; transition: background-color var(--t-fast) var(--ease-soft), box-shadow var(--t-mid) var(--ease-in), transform var(--t-mid) var(--ease-in); }
 .plugin-card.clickable { cursor: pointer; }
 .plugin-card.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .plugin-card-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.plugin-card .plugin-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--bg); }
+.plugin-card .plugin-icon { width: 40px; height: 40px; border-radius: 12px; background: var(--bg); }
 .plugin-card .plugin-icon img { width: 24px; height: 24px; }
 .plugin-card-title { flex: 1; min-width: 0; }
 .plugin-card-title .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 500; }
 .plugin-card-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; color: var(--text3); font-size: 12px; }
 .plugin-card-desc { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.9em; color: var(--text2); font-size: 13px; line-height: 1.45; }
 .plugin-card-cats { margin-top: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text3); font-size: 12px; }
-.plugin-card .plugin-install { background: var(--bg); }
+.plugin-card .plugin-install { background: var(--card); color: var(--text); box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 16%, transparent), var(--shadow-xs); }
+.dark .plugin-card .plugin-install { background: color-mix(in srgb, var(--text) 12%, var(--field)); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16); }
 .plugin-card:has(.badline) { opacity: .6; }
 .plugin-empty { margin-top: 18px; }
-@media (hover: hover) { .plugin-card.clickable:hover { background: color-mix(in srgb, var(--text) 4%, var(--field)); } }
+@media (hover: hover) { .plugin-card.clickable:hover { background: color-mix(in srgb, var(--text) 4%, var(--field)); transform: translateY(-2px); box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 11%, transparent), var(--shadow-sm); } }
 @media (max-width: 767px) {
   .plugin-search { margin-top: 0; }
   .plugin-grid { grid-template-columns: 1fr; gap: 8px; }

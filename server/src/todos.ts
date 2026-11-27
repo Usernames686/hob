@@ -181,7 +181,7 @@ function busyHere(runtime: HobRuntime, assistantId: string, groupId?: string): b
  * - 这个会话里还在等用户回答的提问卡；
  * - 群会话里，还有别的成员在这个会话里跑着一轮。
  */
-export function todosBusy(runtime: HobRuntime, assistantId: string, groupId?: string): boolean {
+export function hasUnfinishedWork(runtime: HobRuntime, assistantId: string, groupId?: string): boolean {
   if (busyHere(runtime, assistantId, groupId)) return true;
   // 转交和交给群只从单聊发出（群会话里没有 message_assistant、message_group），群会话不算这两样
   const delegating = groupId === undefined && runtime.store
@@ -193,6 +193,10 @@ export function todosBusy(runtime: HobRuntime, assistantId: string, groupId?: st
   const asking = runtime.store.approvals().some((approval) => approval.status === "pending" && (groupId ? approval.groupId === groupId : approval.assistantId === assistantId && !approval.groupId));
   if (asking) return true;
   return groupId !== undefined && runtime.router.busyMembers(groupId).some((id) => id !== assistantId);
+}
+
+export function todosBusy(runtime: HobRuntime, assistantId: string, groupId?: string): boolean {
+  return hasUnfinishedWork(runtime, assistantId, groupId) || Boolean(groupId && runtime.groups?.hasPendingWork(groupId));
 }
 
 /**

@@ -1,9 +1,9 @@
-// 置顶头像按住拖动换位置：鼠标和触摸走同一套指针事件，松手后按新先后保存。
+// 置顶头像与列表行拖动：置顶区内拖动换先后，往下拖出置顶区取消置顶；列表行上下拖换顺序、往上拖进置顶区置顶。
 // 换位置的算法在 ../pin-drag.ts，这里只管指针、拖动中的预览和落盘。
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, RefObject } from "react";
 import { dropIndex, reorderAt, type Box } from "../pin-drag.ts";
-import { closeAssistantMenu, pinConversation, saveListOrder, savePinOrder, shallow, useAppSelect, type State } from "../store.ts";
+import { closeAssistantMenu, getState, pinConversation, saveListOrder, savePinOrder, setHomeOrder, shallow, unpinConversation, useAppSelect, type State } from "../store.ts";
 
 /** 拖动只在菜单开着、或者正在搜索时才改行为：切页不牵动这几行。 */
 const pickMenuOpen = (s: State) => s.menu !== null;
@@ -29,11 +29,13 @@ export interface PinDrag<T> {
   locked: boolean;
   /** 拖动中的先后；没在拖就是传进来的先后 */
   order: T[];
-  /** 正拖着的那一个助手 */
+  /** 正拖着的那一个助手或群 */
   lifted: string | null;
+  /** 正拖到置顶区下方，松手将取消置顶 */
+  unpin: boolean;
   /** 每个头像接的指针事件 */
   target: (id: string) => PinDragTarget;
-  /** 包住头像那一层的类名：抬起的那一格加 lift，跟着指针走 */
+  /** 包住头像那一层的类名：抬起的那一格加 lift，拖出置顶区再加 unpin */
   className: (id: string) => string | undefined;
 }
 
@@ -58,13 +60,39 @@ function measure(el: HTMLElement, plain = false): Box {
   return { left: r.left, top: r.top, width: r.width, height: r.height };
 }
 
-export function usePinDrag<T extends { id: string }>(pins: T[], locked = false): PinDrag<T> {
+/** 当前可见的普通列表行（排除收起折叠区）。 */
+function visibleRows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".home-row[data-row]")].filter((el) => el.getBoundingClientRect().height > 0);
+}
+
+function clearRowMarks() {
+  for (const el of document.querySelectorAll<HTMLElement>(".home-row.drop-before, .home-row.drop-after")) {
+    el.classList.remove("drop-before", "drop-after");
+  }
+}
+
+/** 在列表里落到哪：插在第几行前面，画线的那一行和画在上边还是下边。 */
+function rowSlot(x: number, y: number): { index: number; el: HTMLElement; after: boolean } | null {
+  const list = visibleRows();
+  if (!list.length) return null;
+  const first = list[0].getBoundingClientRect();
+  const last = list[list.length - 1].getBoundingClientRect();
+  if (x < first.left - 24 || x > first.right + 24 || y < first.top - 20 || y > last.bottom + 20) return null;
+  const index = list.findIndex((el) => {
+    const r = el.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  });
+  return index < 0 ? { index: list.length, el: list[list.length - 1], after: true } : { index, el: list[index], after: false };
+}
+
+export function usePinDrag<T extends { id: string }>(pins: T[], locked = false, canUnpin?: (item: T) => boolean): PinDrag<T> {
   const menuOpen = useAppSelect(pickMenuOpen);
   const grid = useRef<HTMLDivElement | null>(null);
   /** 拖动中的先后（只存 id）；松手就清掉，跟着保存后的先后走 */
   const [orderIds, setOrderIds] = useState<string[] | null>(null);
   const [press, setPress] = useState<Press | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [unpin, setUnpin] = useState(false);
   /** 这次按下有没有真拖过：拖过就跟一次点击，别顺手打开对话 */
   const moved = useRef(false);
 
@@ -88,6 +116,13 @@ export function usePinDrag<T extends { id: string }>(pins: T[], locked = false):
 
   useEffect(() => {
     if (!press) return;
+    const current = pins.find((item) => item.id === press.id);
+    const allowUnpin = Boolean(current && canUnpin?.(current));
+    const inUnpinZone = (x: number, y: number) => {
+      if (!allowUnpin) return false;
+      const r = grid.current?.getBoundingClientRect();
+      return Boolean(r && y > r.bottom + 20 && x >= r.left - 40 && x <= r.right + 40);
+    };
     const onMove = (e: PointerEvent) => {
       if (e.pointerId !== press.pointerId) return;
       if (!press.active) {
@@ -98,6 +133,14 @@ export function usePinDrag<T extends { id: string }>(pins: T[], locked = false):
         setPress({ ...press, active: true });
       }
       setPos({ x: e.clientX, y: e.clientY });
+      const out = inUnpinZone(e.clientX, e.clientY);
+      setUnpin(out);
+      clearRowMarks();
+      if (out) {
+        const at = rowSlot(e.clientX, e.clientY);
+        at?.el.classList.add(at.after ? "drop-after" : "drop-before");
+        return;
+      }
       const ids = orderIds ?? pins.map((a) => a.id);
       const next = reorderAt(ids, boxes(ids), press.id, e.clientX, e.clientY);
       if (next !== ids) setOrderIds(next);
@@ -106,20 +149,39 @@ export function usePinDrag<T extends { id: string }>(pins: T[], locked = false):
       if (e.pointerId !== press.pointerId) return;
       const ids = orderIds ?? pins.map((a) => a.id);
       const dropped = press.active;
+      const shouldUnpin = dropped && inUnpinZone(e.clientX, e.clientY);
+      const at = shouldUnpin ? rowSlot(e.clientX, e.clientY) : null;
+      const rowIds = at ? visibleRows().map((el) => el.dataset.row ?? "").filter((id) => id && id !== press.id) : null;
+      clearRowMarks();
       setPress(null);
       setPos(null);
       setOrderIds(null);
-      if (dropped) void savePinOrder(ids);
+      setUnpin(false);
+      if (!dropped) return;
+      if (shouldUnpin) {
+        void (async () => {
+          if (await unpinConversation(press.id)) return;
+          if (at && rowIds) {
+            const next = rowIds.slice();
+            next.splice(at.index, 0, press.id);
+            if (getState().homeOrder !== "custom") setHomeOrder("custom");
+            await saveListOrder(next);
+          }
+        })();
+        return;
+      }
+      void savePinOrder(ids);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
+      clearRowMarks();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [press, orderIds, pins]);
+  }, [press, orderIds, pins, canUnpin]);
 
   // 抬起的那一格跟着指针：量它现在这一格的布局位置，再平移到手指下的位置。
   useLayoutEffect(() => {
@@ -148,6 +210,7 @@ export function usePinDrag<T extends { id: string }>(pins: T[], locked = false):
         if (!el) return;
         const r = el.getBoundingClientRect();
         moved.current = false;
+        setUnpin(false);
         setPress({
           id,
           pointerId: e.pointerId,
@@ -170,16 +233,16 @@ export function usePinDrag<T extends { id: string }>(pins: T[], locked = false):
     locked,
     order,
     lifted: press?.active ? press.id : null,
+    unpin: Boolean(press?.active && unpin),
     target,
-    className: (id) => (press?.active && press.id === id ? "lift" : undefined),
+    className: (id) => (press?.active && press.id === id ? (unpin ? "lift unpin" : "lift") : undefined),
   };
 }
 
 /**
- * 日常里的助手按住拖：拖进置顶区就置顶，落在哪一格就排在哪；在日常里上下拖就换先后（先后也存在 pinOrder，
- * 只和同一组的比）。只接鼠标：触摸在列表上是滚动，长按留给菜单。
+ * 会话行（助手或群）按住拖：拖进置顶区就置顶，落在哪一格就排在哪；
+ * 在列表里上下拖就换先后（自动切到固定顺序并保存 listOrder）。只接鼠标，触摸编辑时按住把手拖。
  */
-/** 会话行（助手或群）要拖的东西：往置顶区拖就置顶，在行里上下拖就换先后。 */
 export function useRowToPin(item: { id: string; pinned: boolean; hidden: boolean }, reorder = false) {
   const app = useAppSelect(pickPinDrag, shallow);
   const menuOpen = app.menu !== null;
@@ -191,25 +254,14 @@ export function useRowToPin(item: { id: string; pinned: boolean; hidden: boolean
 
   useEffect(() => {
     if (!press) return;
-    const grid = () => document.querySelector<HTMLElement>(".pins:not(.locked)");
+    const grid = () => document.querySelector<HTMLElement>(".pins:not(.locked), .mpins:not(.locked)");
     const over = (x: number, y: number) => {
       const r = grid()?.getBoundingClientRect();
       return !!r && x >= r.left && x <= r.right && y >= r.top - 12 && y <= r.bottom + 12;
     };
-    const rows = () => [...document.querySelectorAll<HTMLElement>(".home-row[data-row]")];
-    /** 在日常里落到哪：插在第几行前面，画线的那一行和画在上边还是下边 */
-    const slot = (x: number, y: number) => {
-      const list = rows();
-      if (searching || !list.length) return null;
-      const first = list[0].getBoundingClientRect();
-      const last = list[list.length - 1].getBoundingClientRect();
-      if (x < first.left || x > first.right || y < first.top - 20 || y > last.bottom + 20) return null;
-      const index = list.findIndex((el) => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
-      return index < 0 ? { index: list.length, el: list[list.length - 1], after: true } : { index, el: list[index], after: false };
-    };
     const clearMarks = () => {
       grid()?.classList.remove("drop");
-      for (const el of rows()) el.classList.remove("drop-before", "drop-after");
+      clearRowMarks();
     };
     const onMove = (e: PointerEvent) => {
       if (e.pointerId !== press.pointerId) return;
@@ -222,9 +274,15 @@ export function useRowToPin(item: { id: string; pinned: boolean; hidden: boolean
       const hit = over(e.clientX, e.clientY);
       clearMarks();
       if (hit) grid()?.classList.add("drop");
-      else {
-        const at = slot(e.clientX, e.clientY);
-        at?.el.classList.add(at.after ? "drop-after" : "drop-before");
+      else if (!searching && !item.hidden) {
+        const at = rowSlot(e.clientX, e.clientY);
+        if (at) {
+          const ids = visibleRows().map((el) => el.dataset.row ?? "");
+          const from = ids.indexOf(item.id);
+          if (from < 0 || (at.index !== from && at.index !== from + 1)) {
+            at.el.classList.add(at.after ? "drop-after" : "drop-before");
+          }
+        }
       }
       setPos({ x: e.clientX, y: e.clientY, over: hit });
     };
@@ -236,14 +294,18 @@ export function useRowToPin(item: { id: string; pinned: boolean; hidden: boolean
       setPos(null);
       if (!press.active) return;
       if (!root || !over(e.clientX, e.clientY)) {
-        const at = slot(e.clientX, e.clientY);
-        if (!at || (!reorder && item.hidden)) return;
-        const ids = rows().map((el) => el.dataset.row ?? "");
+        if (searching || item.hidden) return;
+        const at = rowSlot(e.clientX, e.clientY);
+        if (!at) return;
+        const ids = visibleRows().map((el) => el.dataset.row ?? "");
         const from = ids.indexOf(item.id);
         if (from < 0) return;
+        const to = at.index > from ? at.index - 1 : at.index;
+        if (to === from) return;
         const next = ids.filter((id) => id !== item.id);
-        next.splice(at.index > from ? at.index - 1 : at.index, 0, item.id);
-        void (reorder ? saveListOrder(next) : savePinOrder(next));
+        next.splice(to, 0, item.id);
+        if (getState().homeOrder !== "custom") setHomeOrder("custom");
+        void saveListOrder(next);
         return;
       }
       const cells = [...root.querySelectorAll<HTMLElement>("[data-pin]")];
@@ -261,11 +323,12 @@ export function useRowToPin(item: { id: string; pinned: boolean; hidden: boolean
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
+      clearMarks();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [press, item.id, item.hidden, searching, reorder]);
+  }, [press, item.id, item.hidden, searching]);
 
   return {
     onPointerDown(e: ReactPointerEvent) {

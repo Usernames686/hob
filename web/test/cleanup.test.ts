@@ -21,7 +21,7 @@ beforeAll(async () => {
   const address = server.httpServer!.address();
   if (!address || typeof address === "string") throw new Error("测试服务器没有端口");
   base = `http://127.0.0.1:${address.port}`;
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ locale: "zh-CN" });
   page.setDefaultTimeout(60_000);
   page.setDefaultNavigationTimeout(60_000);
@@ -139,8 +139,8 @@ describe("前端失败路径", () => {
     expect(await page.getByRole("button", { name: "收起右栏" }).count()).toBe(0);
     await page.getByTitle("编辑助手").last().click();
     expect(await page.getByRole("button", { name: "收起右栏" }).count()).toBe(0);
-    await page.getByTitle("返回").last().click();
-    await page.getByTitle("返回").last().click();
+    await page.locator(".mlayer:not(.leaving)").getByTitle("返回").click();
+    await page.locator(".sheet-drawer").getByTitle("返回").click();
     await page.locator(".chat").getByText("排查页面卡顿").first().click();
     expect(await page.getByRole("button", { name: "收起右栏" }).count()).toBe(0);
   }, BROWSER_TEST_TIMEOUT);

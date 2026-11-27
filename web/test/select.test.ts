@@ -10,7 +10,7 @@ const BROWSER_TEST_TIMEOUT = 90_000;
 beforeAll(async () => {
   server = await createServer({ server: { port: 0, host: "127.0.0.1" } });
   await server.listen();
-  browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", args: ["--no-sandbox"] });
+  browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox"] });
   page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
   // 全仓库并行时浏览器和约 155 个 Vitest worker 竞争 CPU，模块渲染可能超过 15 秒。
   page.setDefaultTimeout(60_000);

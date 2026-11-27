@@ -17,7 +17,9 @@ vi.mock("./store.ts", () => ({
   leaveTopicList: () => undefined,
   toggleSideCollapsed: () => undefined,
   openKnowledge: () => undefined,
+  openPlugins: () => undefined,
   openSettings: () => undefined,
+  openStars: () => undefined,
   openFilePreview: () => undefined,
   openJob: () => undefined,
 }));

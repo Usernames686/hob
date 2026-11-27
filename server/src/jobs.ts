@@ -934,7 +934,7 @@ export class JobManager {
         this.store.saveRoutine(updated);
         this.bus.emit({ type: "routine", routine: updated });
         void this.runtime.router
-          .event(job.assistantId, assistantJobResultEvent(this.runtime.home, next, { prefix: `定时任务「${routine.name}」`, toolCount, group: next.groupId ? this.store.group(next.groupId) : undefined, skills: resultSkills }), {
+          .event(next.startedBy ?? job.assistantId, assistantJobResultEvent(this.runtime.home, next, { prefix: `定时任务「${routine.name}」`, toolCount, group: next.groupId ? this.store.group(next.groupId) : undefined, skills: resultSkills }), {
             routine: { id: routine.id, name: routine.name, jobId: job.id },
             ...resultDetails,
           }, next.groupId)
@@ -956,8 +956,8 @@ export class JobManager {
     await this.finishing.get(jobId);
     const target = this.store.job(jobId);
     if (!target) throw new Error("没有这个任务。");
-    // 用户绕过助手直接对任务说的话，助手也要知道：任务之后来问、交结果时它才对得上
-    if (source === "user") void this.runtime.router.remember(target.assistantId, `用户给任务「${target.title}」（${target.id}）追加了回复：${text}`, target.groupId).catch((error) => console.error("记进助手会话失败：", error));
+    // 用户绕过助手直接对任务说的话，记进接收这个任务结果的助手（群里派给别人做的是 startedBy），之后交结果时才对得上
+    if (source === "user") void this.runtime.router.remember(target.startedBy ?? target.assistantId, `用户给任务「${target.title}」（${target.id}）追加了回复：${text}`, target.groupId).catch((error) => console.error("记进助手会话失败：", error));
     const interrupted = this.sediments.has(jobId) ? await this.stopSediment(jobId) : undefined;
     const job = this.store.job(jobId);
     if (!job) throw new Error("没有这个任务。");

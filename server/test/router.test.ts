@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import type { Item, Job } from "../../shared/types.ts";
+import { parsePetDirect } from "../../shared/pet.ts";
 import { answerApproval } from "../src/actions.ts";
 import { createRuntime } from "../src/runtime.ts";
 import { createApp } from "../src/http.ts";
@@ -667,7 +668,8 @@ describe("Router", () => {
       expect(hob.runtime.store.drafts()[0]?.duty).toBe("盯着模型发布和");
       // 模型给的头像只认内置的，不能指到生成的头像文件上
       await tool.execute("tool-call", { name: "旁门", duty: "试试", dutyLong: "试试。", sprite: "img:img-abc123.png" });
-      expect(hob.runtime.store.drafts().find((draft) => draft.name === "旁门")?.sprite).toBe("page");
+      const fallback = hob.runtime.store.drafts().find((draft) => draft.name === "旁门")?.sprite;
+      expect(parsePetDirect(fallback ?? "")?.shape).toBe("cloud");
     } finally {
       hob.close();
     }

@@ -6,12 +6,11 @@ import { Type } from "typebox";
 import { propArtSchema } from "./prop-art-schema.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-  PROP_IDS,
-  PROPS,
   distinctSprite,
   parseSprite,
   validateCustomProp,
 } from "../../shared/sprites.ts";
+import { distinctPetSprite, parsePetDirect, PET_COLOR_IDS, PET_SHAPE_IDS, PET_SHAPES } from "../../shared/pet.ts";
 import { THINKING_TEXT } from "../../shared/thinking.ts";
 import type { Assistant, Draft, Group, GroupItem } from "../../shared/types.ts";
 import type { AssistantPatch } from "./actions.ts";
@@ -29,7 +28,7 @@ type Tool = ToolDefinition<any, any>;
 
 /** 查看工具每页几条：由代码固定，不是参数。 */
 const PAGE_SIZE = 20;
-const REPLY_MODE_DESCRIPTION = "用户没点名的消息谁来回应：owner 群主回应（默认），all 全员回应，群主先回，其他成员依次轮到。";
+const REPLY_MODE_DESCRIPTION = "用户没点名的消息谁来回应：owner 群主回应（默认），auto 自动选人（由轻量模型判断最合适的成员，拿不准时回退群主），all 全员回应，群主先回，其他成员依次轮到。";
 
 function ok(text: string) {
   return { content: [{ type: "text" as const, text }], details: undefined };
@@ -216,8 +215,9 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
     {
       name: "show_group",
       label: "查看群",
-      description:
-        "查看群。不填 groupId，列出全部群，每个一行：名字、id、群主、成员、进行中的话题数；填了，查看这个群的详情：职责、话题（进行中的和已关闭的）和消息。填话题 id 就查看这个话题。",
+      description: groupId && !primary
+        ? "查看本群及其话题的历史。不填 groupId 时列出本群；填本群或所属话题的 id 时查看详情和消息。"
+        : "查看群。不填 groupId，列出全部群，每个一行：名字、id、群主、成员、进行中的话题数；填了，查看这个群的详情：职责、话题（进行中的和已关闭的）和消息。填话题 id 就查看这个话题。",
       parameters: Type.Object({
         groupId: Type.Optional(Type.String({ description: "可选，群或话题的 id" })),
         query: Type.Optional(Type.String({ description: "可选，关键词。不填 groupId 时按群名、职责、成员和话题名找群；填了 groupId 时在这个群和它的话题的消息里找" })),
@@ -226,9 +226,12 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
       execute: async (_id, params: any) => {
         const query = String(params.query ?? "").trim();
         const id = String(params.groupId ?? "").trim();
+        const current = groupId && !primary ? store.group(groupId) : undefined;
+        const host = current?.parentId ? store.group(current.parentId) : current;
+        if (groupId && !primary && (!host || host.ownerId !== assistantId)) return fail("只有群主可以查看本群历史。");
         if (!id) {
           const needle = query.toLowerCase();
-          const all = store.groups().filter((group) => !group.parentId);
+          const all = host ? [host] : store.groups().filter((group) => !group.parentId);
           const listed = all.filter((group) => {
             if (!needle) return true;
             const topics = runtime.groups.topicsOf(group.id).map((topic) => topic.name);
@@ -243,7 +246,9 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
           });
           return ok([...rows, pageHint(page, listed.length, pages, "个")].join("\n"));
         }
-        const group = store.group(id);
+        const group = host && id !== host.id
+          ? runtime.groups.topicsOf(host.id).find((topic) => topic.id === id)
+          : store.group(id);
         if (!group) return fail(`没有这个群：${id}`);
         const timezoneText = timezone;
         // 给了关键词：在这个群和它的话题的消息里找，新的在前
@@ -312,7 +317,7 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
         instructions: Type.Optional(Type.String({ description: "用户给这个助手写的补充提示词：性格、说话方式、工作方法、格式要求，什么都可以。用户给了原文就原样照抄，不缩写、不改写；用户没给就不填。" })),
         cwd: Type.Optional(Type.String({ description: "可选，助手的工作目录（绝对路径，如 /workspace/app），在和它单聊时生效；在群里用群和话题的目录。创建后不可修改；不填则使用系统默认目录。" })),
         sprite: Type.String({
-          description: `内置道具：${PROP_IDS.filter((id) => id !== "hob").map((id) => `${id} ${PROPS[id].label}`).join("，")}；或 custom（同时填 prop_art，自己画一件）`,
+          description: `宠物造型：${PET_SHAPE_IDS.map((id) => `${id} ${PET_SHAPES[id].label}(${PET_SHAPES[id].hint})`).join("，")}；可加「:颜色」（${PET_COLOR_IDS.join("/")} 或 #rrggbb），如 cat:purple、cloud:blue`,
         }),
         prop_art: propArtSchema,
         routines: Type.Optional(
@@ -326,10 +331,12 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
       execute: async (_id, params: any, signal) => {
         const checked = params.prop_art !== undefined ? validateCustomProp(params.prop_art) : undefined;
         if (checked && !checked.ok) return fail(`prop_art 画得不对：${checked.error}；照着原因改好，再调用一次。`);
-        const given = parseSprite(String(params.sprite ?? ""));
-        if (given?.prop === "hob") return fail("hob 火苗是主助手专用的。");
-        if (checked?.ok && given && given.prop !== "custom") {
-          return fail("sprite 填了内置道具就不要传 prop_art；要自画一件就把 sprite 填 custom。");
+        const rawSprite = String(params.sprite ?? "");
+        const pet = parsePetDirect(rawSprite);
+        const given = pet ? undefined : parseSprite(rawSprite);
+        if (given?.prop === "hob") return fail("hob 是主助手专用的。");
+        if (checked?.ok && (pet || (given && given.prop !== "custom"))) {
+          return fail("sprite 填了内置造型就不要传 prop_art；要自画一件就把 sprite 填 custom。");
         }
         if (given?.prop === "custom" && !checked?.ok) {
           return fail("sprite 是 custom 时要同时给 prop_art（art、pal、dx）画一件。");
@@ -343,8 +350,13 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
         }
         const routinesInput: { name: string; instruction: string; schedule: string }[] = params.routines ?? [];
         const taken = store.assistants().map((item) => item.sprite);
-        // 自画的存画法（sprite 记成 custom）；内置道具的照旧，和已有助手撞了就换个颜色
-        const sprite = checked?.ok ? distinctSprite("custom", taken) : given ? distinctSprite(String(params.sprite), taken) : "page";
+        const sprite = checked?.ok
+          ? distinctSprite("custom", taken)
+          : pet
+            ? distinctPetSprite(rawSprite, taken)
+            : given
+              ? distinctSprite(rawSprite, taken)
+              : distinctPetSprite("cloud", taken);
         const prop = checked?.ok ? checked.prop : undefined;
         const draft: Draft = {
           id: newId("d-"),
@@ -478,7 +490,7 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
         purpose: Type.String({ description: "这个群的职责，最多 200 字" }),
         members: Type.Array(Type.String(), { description: "成员的助手 id，可以有你自己。" }),
         ownerId: Type.String({ description: "群主的助手 id，要在成员里，可以是你自己。" }),
-        replyMode: Type.Optional(Type.Union([Type.Literal("owner"), Type.Literal("all")], { description: REPLY_MODE_DESCRIPTION })),
+        replyMode: Type.Optional(Type.Union([Type.Literal("owner"), Type.Literal("all"), Type.Literal("auto")], { description: REPLY_MODE_DESCRIPTION })),
         cwd: Type.Optional(Type.String({ description: "可选，群的工作目录（绝对路径，如 /workspace/app）。创建后不可修改；群绑定后其下所有话题共用该目录。" })),
       }),
       execute: async (_id, params: any) => {
@@ -509,7 +521,7 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
         addMembers: Type.Optional(Type.Array(Type.String(), { description: "要加的成员 id" })),
         removeMembers: Type.Optional(Type.Array(Type.String(), { description: "要减的成员 id" })),
         ownerId: Type.Optional(Type.String({ description: "新群主的助手 id，要在成员里" })),
-        replyMode: Type.Optional(Type.Union([Type.Literal("owner"), Type.Literal("all")], { description: REPLY_MODE_DESCRIPTION })),
+        replyMode: Type.Optional(Type.Union([Type.Literal("owner"), Type.Literal("all"), Type.Literal("auto")], { description: REPLY_MODE_DESCRIPTION })),
       }),
       execute: async (_id, params: any) => {
         const id = String(params.groupId ?? "").trim();
@@ -534,7 +546,7 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
         if (ownerId !== undefined && ownerId !== group.ownerId) { patch.ownerId = ownerId; changes.push("群主"); }
         if (params.replyMode !== undefined) {
           const mode = typeof params.replyMode === "string" ? params.replyMode.trim() : params.replyMode;
-          if (mode !== "owner" && mode !== "all") return fail(`回应方式只能填 owner 或 all，收到「${String(params.replyMode)}」`);
+          if (mode !== "owner" && mode !== "all" && mode !== "auto") return fail(`回应方式只能填 owner、all 或 auto，收到「${String(params.replyMode)}」`);
           if (mode !== (group.replyMode ?? "owner")) { patch.replyMode = mode; changes.push("回应方式"); }
         }
         if (!changes.length) return fail("没有要改的项：至少填一项和现在不一样的。");
@@ -551,7 +563,7 @@ export function buildAdminTools(runtime: HobRuntime, assistantId: string, groupI
           if (removedReal.length) list.push(inGroup ? `把${who(removedReal)}移出了群` : `把${who(removedReal)}移出${next.name}`);
           if (changes.includes("群主")) list.push(inGroup ? `群主换成${nameOf(next.ownerId)}` : `把${next.name}的群主换成${nameOf(next.ownerId)}`);
           if (changes.includes("回应方式")) {
-            const label = next.replyMode === "all" ? "全员回应" : "群主回应";
+            const label = next.replyMode === "all" ? "全员回应" : next.replyMode === "auto" ? "自动选人" : "群主回应";
             list.push(inGroup ? `把回应方式改成${label}` : `把${next.name}的回应方式改成${label}`);
           }
           return list.join("；");

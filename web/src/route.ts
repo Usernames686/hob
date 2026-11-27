@@ -24,6 +24,7 @@ function parsePanel(kind: string | undefined, arg: string | null): PanelPage | u
 function panelHash(page: PanelPage): string {
   if (page.kind === "job" || page.kind === "routine") return `/${page.kind}/${encodeURIComponent(page.id)}`;
   if (page.kind === "file") return page.liveId || !page.path ? "" : `/file/${encodeURIComponent(page.path)}`;
+  if (page.kind === "artifact") return page.name ? `/artifact/${encodeURIComponent(page.name)}` : "/artifact";
   return `/${page.kind}`;
 }
 
@@ -37,7 +38,10 @@ export function parseRoute(hash: string): { sel: string | null; group?: string; 
   }
   if (kind === "stars") return { sel: null, settings: false, section: null, stars: true };
   if (kind === "knowledge") return { sel: null, settings: false, section: null, knowledge: true };
-  if (kind === "group" && value) return { sel: null, group: value, settings: false, section: null, panel: parsePanel(panel, decode(panelArg)) };
+  if (kind === "group" && value) {
+    const name = decode(panelArg);
+    return { sel: null, group: value, settings: false, section: null, panel: panel === "artifact" ? { kind: "artifact", groupId: value, ...(name ? { name } : {}) } : parsePanel(panel, name) };
+  }
   if (kind === "chat" && value) return { sel: value, settings: false, section: null, panel: parsePanel(panel, decode(panelArg)) };
   if (kind === "settings") {
     if (value === "mcp") return { sel: null, settings: false, section: null, plugins: true, pluginId: null, pluginPage: "installed" };
@@ -59,5 +63,6 @@ export function routeHash(s: RouteState, narrow: boolean): string {
   const conv = s.gsel ?? s.sel;
   if (!conv || (narrow && s.mobile !== "chat")) return "";
   const top = s.panelStack?.at(-1);
-  return `#/${s.gsel ? "group" : "chat"}/${encodeURIComponent(conv)}${top ? panelHash(top) : ""}`;
+  const panel = top && (top.kind !== "artifact" || top.groupId === s.gsel) ? panelHash(top) : "";
+  return `#/${s.gsel ? "group" : "chat"}/${encodeURIComponent(conv)}${panel}`;
 }

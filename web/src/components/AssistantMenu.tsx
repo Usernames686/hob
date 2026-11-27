@@ -1,9 +1,9 @@
-// 助手行的右键 / 长按菜单：放在顶部、收起、助手设置。桌面右键，手机长按约 500ms。
+// 助手 / 群聊的右键 / 长按菜单：放在顶部、取消置顶、收起、设置。桌面右键，手机长按约 500ms。
 import { t } from "../../../shared/i18n.ts";
 import { useEffect, useRef } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import type { AssistantSummary } from "../../../shared/types.ts";
-import { closeAssistantMenu, openAssistantMenu, openAssistantPanel, patchAssistant, select, useApp } from "../store.ts";
+import { useLeave } from "../motion.ts";
+import { closeAssistantMenu, openAssistantMenu, openAssistantPanel, openGroupSettings, patchAssistant, pinConversation, select, selectGroup, unpinConversation, useApp } from "../store.ts";
 
 /** 长按多久算“长按”。 */
 const HOLD_MS = 500;
@@ -22,7 +22,7 @@ export interface AssistantMenuHandlers {
  * 挂在助手头像 / 助手行上：右键或长按弹菜单。
  * 长按弹出后还会跟一次 click，takeHeld 让那个 click 不算数（不然会顺手把对话打开）。
  */
-export function useAssistantMenu(a: AssistantSummary): {
+export function useAssistantMenu(item: { id: string }): {
   handlers: AssistantMenuHandlers;
   takeHeld: () => boolean;
 } {
@@ -42,7 +42,7 @@ export function useAssistantMenu(a: AssistantSummary): {
     onContextMenu(e) {
       e.preventDefault();
       stop();
-      openAssistantMenu(a.id, e.clientX, e.clientY);
+      openAssistantMenu(item.id, e.clientX, e.clientY);
     },
     onPointerDown(e) {
       if (e.pointerType !== "touch") return;
@@ -56,7 +56,7 @@ export function useAssistantMenu(a: AssistantSummary): {
         held.current = true;
         // 有的浏览器长按不补 click，过了这段时间就别再拦点击了
         window.setTimeout(() => (held.current = false), 1000);
-        openAssistantMenu(a.id, p.x, p.y);
+        openAssistantMenu(item.id, p.x, p.y);
       }, HOLD_MS);
     },
     onPointerMove(e) {
@@ -82,6 +82,10 @@ export function useAssistantMenu(a: AssistantSummary): {
 export function AssistantMenu() {
   const s = useApp();
   const menu = s.menu;
+  const leave = useLeave(Boolean(menu), 165);
+  const lastMenu = useRef(menu);
+  if (menu) lastMenu.current = menu;
+  const shown = menu ?? (leave.mounted ? lastMenu.current : null);
   const box = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -90,7 +94,7 @@ export function AssistantMenu() {
       if (box.current && !box.current.contains(e.target as Node)) closeAssistantMenu();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeAssistantMenu();
+      if (e.key === "Escape") { e.preventDefault(); closeAssistantMenu(); }
     };
     // 捕获阶段：点在其他控件上也先关菜单
     document.addEventListener("pointerdown", onDown, true);
@@ -101,35 +105,57 @@ export function AssistantMenu() {
     };
   }, [menu]);
 
-  if (!menu) return null;
-  const a = s.assistants.find((x) => x.id === menu.id);
-  if (!a) return null;
+  if (!leave.mounted || !shown) return null;
+  const a = s.assistants.find((x) => x.id === shown.id);
+  const g = a ? null : s.groups.find((x) => x.id === shown.id);
+  if (!a && !g) return null;
 
   const run = (fn: () => void) => {
     closeAssistantMenu();
     fn();
   };
   // 贴着窗口边弹的时候往里收，菜单不出界
-  const items = a.primary ? 1 : 3;
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - 172));
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - (items * 34 + 16)));
+  const items = a ? (a.primary ? 1 : 3) : 2;
+  const left = Math.max(8, Math.min(shown.x, window.innerWidth - 172));
+  const top = Math.max(8, Math.min(shown.y, window.innerHeight - (items * 34 + 16)));
+
+  if (g) {
+    const pinned = Boolean(s.groupPrefs[g.id]?.pinned);
+    return (
+      <div className={`amenu${leave.leaving ? " leaving" : ""}`} ref={box} style={{ left, top, transformOrigin: `${shown.x - left}px ${shown.y - top}px` }} onContextMenu={(e) => e.preventDefault()}>
+        <button onClick={() => run(() => void (pinned ? unpinConversation(g.id) : pinConversation(g.id)))}>
+          {pinned ? t("取消置顶") : t("放在顶部")}
+        </button>
+        <button
+          onClick={() =>
+            run(() => {
+              void selectGroup(g.id, false);
+              openGroupSettings(g.parentId ?? g.id);
+            })
+          }
+        >
+          {t("编辑群")}
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="amenu" ref={box} style={{ left, top, transformOrigin: `${menu.x - left}px ${menu.y - top}px` }} onContextMenu={(e) => e.preventDefault()}>
-      {a.primary ? null : (
-        <button onClick={() => run(() => void patchAssistant(a.id, { pinned: !a.pinned }))}>
-          {a.pinned ? t("取消置顶") : t("放在顶部")}
+    <div className={`amenu${leave.leaving ? " leaving" : ""}`} ref={box} style={{ left, top, transformOrigin: `${shown.x - left}px ${shown.y - top}px` }} onContextMenu={(e) => e.preventDefault()}>
+      {a!.primary ? null : (
+        <button onClick={() => run(() => void patchAssistant(a!.id, { pinned: !a!.pinned }))}>
+          {a!.pinned ? t("取消置顶") : t("放在顶部")}
         </button>
       )}
-      {a.primary ? null : (
-        <button onClick={() => run(() => void patchAssistant(a.id, { hidden: !a.hidden }))}>
-          {a.hidden ? t("放回列表") : t("收起这个助手")}
+      {a!.primary ? null : (
+        <button onClick={() => run(() => void patchAssistant(a!.id, { hidden: !a!.hidden }))}>
+          {a!.hidden ? t("放回列表") : t("收起这个助手")}
         </button>
       )}
       <button
         onClick={() =>
           run(() => {
-            void select(a.id, false);
+            void select(a!.id, false);
             openAssistantPanel();
           })
         }

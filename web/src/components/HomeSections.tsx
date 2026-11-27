@@ -1,7 +1,7 @@
 // 首页各组：等你处理、助手、任务、定时任务。
 // 手机首页（Mobile）和桌面左栏（Sidebar）共用这一份，筛选规则在 ../home.ts，
 // 两边的头部（我的 / 搜索框 / 新建）各自保留。
-import { memo, useState, type ReactNode } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { t } from "../../../shared/i18n.ts";
 import type { AssistantSummary, GroupSummary, Job } from "../../../shared/types.ts";
@@ -11,6 +11,7 @@ import { assistantStatus } from "../sidebar-data.ts";
 import { Icon } from "../icons.tsx";
 import { Avatar, type AvatarMark } from "../sprites.tsx";
 import { useRows } from "../motion.ts";
+import { SpringPill } from "./Motion.tsx";
 import { closePanelPages, getState, openAssistant, openJob, openJobs, openRoutine, select, selectGroup, setHomeFilter, setHomeOrder, shallow, useAppSelect, type State } from "../store.ts";
 import { cronText, fmtElapsed, fmtList } from "../util.ts";
 import { useAssistantMenu } from "./AssistantMenu.tsx";
@@ -135,7 +136,7 @@ export function Pin({
       }}
     >
       {drag ? <Icon name="grip" size={14} className="grip" /> : null}
-      <Avatar sprite={a.sprite} prop={a.prop} size={size} motion={busy && !sel ? "peek" : undefined} slot={slot} mark={mark} />
+      <Avatar sprite={a.sprite} prop={a.prop} size={size} live interactive draggable={false} follow motion={busy && !sel ? "think" : undefined} slot={slot} mark={mark} />
       <div className="nm">{a.name}</div>
       <div className="sub">{a.duty}</div>
     </button>
@@ -148,6 +149,9 @@ export function pinLayout(count: number): { cls: string; size: number } {
   if (count === 2) return { cls: " n2", size: 62 };
   return { cls: "", size: 52 };
 }
+
+/** 列表行助手头像默认向右上方瞟（看向助手名称与右上角方向），鼠标进入所在行框后实时跟随鼠标。 */
+const ROW_DEFAULT_LOOK = [11, -7] as const;
 
 export function AssistantRow({
   a,
@@ -164,6 +168,7 @@ export function AssistantRow({
   reorder?: boolean;
   allowPin?: boolean;
 }) {
+  const rowRef = useRef<HTMLButtonElement>(null);
   const menu = useAssistantMenu(a);
   const { busy, slot } = useHomeBusy(a);
   const mark = useMark(a, busy);
@@ -171,8 +176,9 @@ export function AssistantRow({
   const toPin = useRowToPin(a, reorder);
   return (
     <button
+      ref={rowRef}
       className={`list-row home-row${sel ? " sel" : ""}${allowPin && !a.pinned ? " can-pin" : ""}${reorder && allowPin && !a.pinned ? " reorderable" : ""}`}
-      data-row={allowPin && !a.pinned ? a.id : undefined}
+      data-row={allowPin && !a.pinned && !a.hidden ? a.id : undefined}
       {...menu.handlers}
       onPointerDown={(e) => {
         menu.handlers.onPointerDown(e);
@@ -184,7 +190,20 @@ export function AssistantRow({
         else void openAssistant(a.id);
       }}
     >
-      <Avatar sprite={a.sprite} prop={a.prop} size={size} motion={busy && !sel ? "peek" : undefined} slot={slot} mark={mark} />
+      <Avatar
+        sprite={a.sprite}
+        prop={a.prop}
+        size={size}
+        live
+        interactive={false}
+        draggable={false}
+        follow
+        followZone={rowRef}
+        defaultLook={ROW_DEFAULT_LOOK}
+        motion={busy && !sel ? "think" : undefined}
+        slot={slot}
+        mark={mark}
+      />
       <div className="main">
         <div className="l1">
           <span className="nm">{a.name}</span>
@@ -282,7 +301,8 @@ function HomeFilters({ filter }: { filter: State["homeFilter"] }) {
           aria-selected={filter === option.value}
           onClick={() => setHomeFilter(option.value)}
         >
-          {option.label}
+          {filter === option.value ? <SpringPill layoutId="home-filter-pill" className="home-filter-bg" /> : null}
+          <span className="home-filter-label">{option.label}</span>
         </button>
       ))}
     </div>

@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HobRuntime } from "../src/runtime.ts";
 import { nowBlock } from "../src/now.ts";
+import { writeGroupArtifact } from "../src/group-artifacts.ts";
+import { makeHob } from "./helpers.ts";
 
 describe("现在", () => {
+  it("只带当前话题或综合的白板摘要，按设置显示时间与作者", () => {
+    const { runtime, home, close } = makeHob({}, { memory: "off" });
+    try {
+      const group = runtime.groups.create({ name: "项目", purpose: "研发", ownerId: "hob", members: ["hob"] });
+      const topic = runtime.groups.createTopic(group.id, "方案", "user");
+      vi.useFakeTimers().setSystemTime(new Date("2026-11-04T08:30:00Z"));
+      writeGroupArtifact(home, group.id, { name: "需求", content: "综合的全文", updatedBy: "user" });
+      writeGroupArtifact(home, topic.id, { name: "方案", content: "话题的全文", updatedBy: "hob" });
+      expect(nowBlock(runtime, "hob", group.id)).toBe("【现在】2026-11-04 16:30 周三\n当前白板：需求.md（用户 16:30 更新，v1）");
+      expect(nowBlock(runtime, "hob", topic.id)).toBe("【现在】2026-11-04 16:30 周三\n当前白板：方案.md（Hob 16:30 更新，v1）");
+      expect(nowBlock(runtime, "hob")).not.toContain("当前白板");
+    } finally { vi.useRealTimers(); close(); }
+  });
   it("按助手、状态和时间过滤，并格式化各行", () => {
     vi.useFakeTimers().setSystemTime(new Date("2026-11-04T09:07:00Z"));
     try {
@@ -95,6 +110,31 @@ describe("现在", () => {
         "别处进行中：群「团队」里 t-g「综合里的」，运行 3 分钟；群「团队」的话题「相册」里 t-topic「话题里的」，排队中；群「团队」的话题「打印机」里 t-sibling「别的话题」，运行 3 分钟；群「别的团队」里 t-other「别的群」，运行 3 分钟；群「别的团队」的话题「服务器」里 t-othertopic「别的群的话题」，等你回复",
         "别处等用户选：群「团队」里「综合里的问题」；群「团队」的话题「打印机」里「话题里的问题」",
       ].join("\n"));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("群里派给其他成员的任务出现在派发者（startedBy）的【现在】里并标明执行人，不出现在成员名下", () => {
+    vi.useFakeTimers().setSystemTime(new Date("2026-11-04T09:07:00Z"));
+    try {
+      const groups: Record<string, { id: string; name: string; parentId?: string }> = {
+        "g-team": { id: "g-team", name: "敏捷团队" },
+        "g-t1": { id: "g-t1", name: "登录重构", parentId: "g-team" },
+      };
+      const jobs = [
+        { id: "t-dev", assistantId: "dev", assistantName: "开发", startedBy: "po", title: "写登录接口", status: "running", startedAt: "2026-11-04T09:04:00Z", groupId: "g-team" },
+        { id: "t-qa", assistantId: "qa", assistantName: "测试", startedBy: "po", title: "回归测试", status: "done", endedAt: "2026-11-04T09:05:00Z", groupId: "g-team" },
+        { id: "t-topic", assistantId: "dev", assistantName: "开发", startedBy: "po", title: "补单测", status: "queued", groupId: "g-t1" },
+      ];
+      const root = (id: string) => groups[id]?.parentId ?? groups[id]?.id;
+      const store = { jobs: () => jobs, group: (id: string) => groups[id], groupMatches: (filter: string, id?: string) => !!id && !!root(id) && root(filter) === root(id), delegations: () => [], approvals: () => [], assistant: (id: string) => ({ name: id }) };
+      const runtime = { store, home: "/tmp/hob-now-empty", settings: { settings: { general: { timezone: "Asia/Shanghai" } } } } as unknown as HobRuntime;
+      expect(nowBlock(runtime, "po", "g-team")).toBe([
+        "【现在】2026-11-04 17:07 周三",
+        "进行中：t-dev「写登录接口」（开发），运行 3 分钟",
+        "最近结束：t-qa「回归测试」（测试）17:05 已完成",
+        "别处进行中：话题「登录重构」里 t-topic「补单测」（开发），排队中",
+      ].join("\n"));
+      expect(nowBlock(runtime, "dev", "g-team")).toBe("【现在】2026-11-04 17:07 周三");
     } finally { vi.useRealTimers(); }
   });
 });
