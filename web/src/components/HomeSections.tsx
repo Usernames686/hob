@@ -61,11 +61,10 @@ function isBusy(s: StatusSource, a: AssistantSummary): boolean {
   return assistantStatus(a, Object.values(s.jobs), Object.values(s.approvals), Object.values(s.delegations)) !== "空闲";
 }
 
-/** 在忙吗、轮到第几个看（按助手顺序给在忙的排号，头像按号错开时间看一圈）。 */
-function useHomeBusy(a: AssistantSummary | undefined): { busy: boolean; slot: number } {
+/** 该助手当前是否有进行中/待确认事项。 */
+function useHomeBusy(a: AssistantSummary | undefined): boolean {
   const s = useAppSelect(pickStatus, shallow);
-  if (!a || !isBusy(s, a)) return { busy: false, slot: 0 };
-  return { busy: true, slot: s.assistants.filter((x) => isBusy(s, x)).findIndex((x) => x.id === a.id) };
+  return Boolean(a && isBusy(s, a));
 }
 
 /**
@@ -116,7 +115,7 @@ export function Pin({
   drag?: Pick<PinDragTarget, "handlers" | "takeMoved">;
 }) {
   const menu = useAssistantMenu(a);
-  const { busy, slot } = useHomeBusy(a);
+  const busy = useHomeBusy(a);
   const mark = useMark(a, busy);
   // 长按弹菜单和拖动换位置都要 pointerdown：两个都调，别用一个把另一个盖掉
   return (
@@ -136,7 +135,7 @@ export function Pin({
       }}
     >
       {drag ? <Icon name="grip" size={14} className="grip" /> : null}
-      <Avatar sprite={a.sprite} prop={a.prop} size={size} live interactive draggable={false} follow motion={busy && !sel ? "think" : undefined} slot={slot} mark={mark} />
+      <Avatar sprite={a.sprite} size={size} live interactive draggable={false} follow motion={busy && !sel ? "think" : undefined} mark={mark} />
       <div className="nm">{a.name}</div>
       <div className="sub">{a.duty}</div>
     </button>
@@ -170,7 +169,7 @@ export function AssistantRow({
 }) {
   const rowRef = useRef<HTMLButtonElement>(null);
   const menu = useAssistantMenu(a);
-  const { busy, slot } = useHomeBusy(a);
+  const busy = useHomeBusy(a);
   const mark = useMark(a, busy);
   // 没置顶的才能往上拖进置顶区（收起的助手也算日常这一组）
   const toPin = useRowToPin(a, reorder);
@@ -192,7 +191,6 @@ export function AssistantRow({
     >
       <Avatar
         sprite={a.sprite}
-        prop={a.prop}
         size={size}
         live
         interactive={false}
@@ -201,7 +199,6 @@ export function AssistantRow({
         followZone={rowRef}
         defaultLook={ROW_DEFAULT_LOOK}
         motion={busy && !sel ? "think" : undefined}
-        slot={slot}
         mark={mark}
       />
       <div className="main">
@@ -214,7 +211,7 @@ export function AssistantRow({
       {allowPin && !a.pinned ? <Icon name="grip" size={14} className="grip" /> : null}
       {toPin.ghost ? createPortal(
         <div className={`pin-ghost${toPin.ghost.over ? " over" : ""}`} style={{ left: toPin.ghost.x, top: toPin.ghost.y }}>
-          <Avatar sprite={a.sprite} prop={a.prop} size={40} />
+          <Avatar sprite={a.sprite} size={40} />
           <span>{toPin.ghost.over ? t("松手置顶") : a.name}</span>
         </div>,
         document.body,
@@ -331,9 +328,8 @@ function Section({ title, more, children }: { title: string; more?: ReactNode; c
 }
 
 function Face({ owner, size, moving }: { owner: AssistantSummary | undefined; size: number; moving?: boolean }) {
-  const { slot } = useHomeBusy(owner);
   if (!owner) return <span style={{ width: size, flex: "none" }} />;
-  return <Avatar sprite={owner.sprite} prop={owner.prop} size={size} motion={moving ? "peek" : undefined} slot={slot} />;
+  return <Avatar sprite={owner.sprite} size={size} petState={moving ? "thinking" : undefined} />;
 }
 
 /** 空的那一组显示提示。 */

@@ -174,7 +174,7 @@ function JobDetail({ id, round, jumpApprovalId }: { id: string; round?: number; 
           <StatusTag meta={jobStatusMeta(job, s.jobs)} />
           {owner || job.assistantName ? (
             <span className="jd-owner">
-              {owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={16} /> : null}
+              {owner ? <Avatar sprite={owner.sprite} size={16} /> : null}
               {owner?.name ?? job.assistantName}
             </span>
           ) : null}
@@ -648,7 +648,7 @@ function WorklogPage() {
                   openWorklogJob(job, !!group, !!owner);
                 }}
               >
-                {owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={26} /> : <span style={{ width: 26 }} />}
+                {owner ? <Avatar sprite={owner.sprite} size={26} /> : <span style={{ width: 26 }} />}
                 <span className="history-content">
                   <span className="n">{job.title}</span>
                   <span className="tm">{fmtWhen(job.startedAt ?? job.createdAt)}{job.durationMs !== undefined ? ` · ${fmtDuration(job.durationMs)}` : active(job) ? ` · ${fmtElapsed(job.startedAt ?? job.createdAt)}` : ""}{group ? ` · ${group.name}` : ""}</span>

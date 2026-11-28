@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   section: "about" as string | null,
   sub: null,
   update: null as UpdateCheck | null,
+  updateMuted: false,
   settings: {
     revision: 1,
     settings: {
@@ -47,6 +48,8 @@ vi.mock("../store.ts", () => ({
   closeSettings: vi.fn(),
   closeSub: vi.fn(),
   setSection: vi.fn(),
+  setUpdateMuted: vi.fn(),
+  setComposerModelPicker: vi.fn(),
   loadAbout: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("./HistoryResults.tsx", () => ({ HistoryResults: () => null }));
@@ -65,6 +68,7 @@ import { Sidebar } from "./Sidebar.tsx";
 describe("新版本小箭头提示", () => {
   beforeEach(() => {
     state.update = null;
+    state.updateMuted = false;
     state.section = "about";
   });
 
@@ -116,5 +120,10 @@ describe("新版本小箭头提示", () => {
     expect(withUpdate).toContain('class="me has-update"');
     expect(withUpdate).toContain('class="update-dot"');
     expect(withUpdate).toContain('aria-label="有新版本 1.15.0"');
+
+    state.updateMuted = true;
+    expect(renderToStaticMarkup(<Sidebar />)).not.toContain("update-dot");
+    expect(renderToStaticMarkup(<MobileList />)).not.toContain("update-dot");
+    expect(renderToStaticMarkup(<SettingsPage narrow={false} leaving={false} />)).not.toContain("update-dot");
   });
 });

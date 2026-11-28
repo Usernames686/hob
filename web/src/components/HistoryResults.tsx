@@ -36,7 +36,7 @@ export function HistoryResults() {
       const group = row.conversation.kind === "group" ? s.groups.find((g) => g.id === row.conversation.id) : undefined;
       const assistant = s.assistants.find((a) => a.id === (group?.ownerId ?? row.conversation.id));
       return <button className="history-row" key={`${row.conversation.kind}:${row.conversation.id}:${row.itemId}`} onClick={() => void jumpToHistory(row.conversation, row.itemId)}>
-        {assistant ? <Avatar sprite={assistant.sprite} prop={assistant.prop} size={36} /> : null}
+        {assistant ? <Avatar sprite={assistant.sprite} size={36} /> : null}
         <span className="history-content"><span className="history-title"><strong>{row.conversationName}</strong><span>{fmtWhen(row.at)}</span></span><span className="history-snippet">{row.starred ? "★ " : ""}<Highlight text={row.snippet} query={query} /></span></span>
       </button>;
     })}

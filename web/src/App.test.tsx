@@ -12,8 +12,13 @@ vi.mock("./desktop-screens.ts", () => ({ useDesktopScreens: () => ({ screens: []
 vi.mock("./store.ts", () => ({
   loadDesktopWidth: () => undefined,
   saveDesktopWidth: vi.fn(),
+  loadSideWidth: () => undefined,
+  saveSideWidth: vi.fn(),
+  loadPanelWidth: () => undefined,
+  savePanelWidth: vi.fn(),
   useApp: () => state,
   backPanel: () => { state.panelStack.pop(); }, closePanelPages: vi.fn(), closeSheet: vi.fn(), collapsePanel: vi.fn(),
+  goHome: vi.fn(), openAssistant: vi.fn(), selectGroup: vi.fn(), togglePanel: vi.fn(), toggleSideCollapsed: vi.fn(),
   fileUrl: (path: string) => path,
   photoUrl: (path: string) => path,
   fetchFileMeta: vi.fn(), setNotice: vi.fn(), togglePreviewFull: vi.fn(),

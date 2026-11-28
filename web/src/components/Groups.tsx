@@ -32,7 +32,7 @@ export function GroupCluster({ g, assistants, size, mark }: { g: GroupSummary; a
     <div className="gav" style={{ "--gs": `${size}px`, "--av-size": `${size}px` } as CSSProperties} aria-hidden="true">
       {list.map((a, i) => (
         <span className="gav-one" key={a.id} style={{ left: pos[i][0], top: pos[i][1], zIndex: list.length - i }}>
-          <Avatar sprite={a.sprite} prop={a.prop} size={inner} />
+          <Avatar sprite={a.sprite} size={inner} />
         </span>
       ))}
       {/* 首页那行：有话题在等你回答是「?」，有人在说话或任务在跑是三个点，和助手头像的标记一样 */}

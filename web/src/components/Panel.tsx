@@ -10,7 +10,7 @@ import { useMenu } from "./use-menu.ts";
 import { skillUsage } from "../skill-usage.ts";
 import { skillOriginText } from "../skill-origin.ts";
 import { commandSummary } from "../../../shared/command.ts";
-import type { PluginView, ActivityLine, Assistant, CustomProp, GroupReplyMode, GroupSummary, ModelInfo, ModelsView, Routine, Rule, ThinkingLevel } from "../../../shared/types.ts";
+import type { PluginView, ActivityLine, Assistant, GroupReplyMode, GroupSummary, ModelsView, Routine, Rule } from "../../../shared/types.ts";
 import { Icon } from "../icons.tsx";
 import { BrandIcon, brandForRef } from "../brand-icons.tsx";
 import { assistantStatus, followingModel, formatNext, nextRoutine, sidebarJobs } from "../sidebar-data.ts";
@@ -21,6 +21,7 @@ import { fitThinking, rosterOptions } from "../model-list.ts";
 import { PetPicker } from "./PetPicker.tsx";
 import type { PetActionId } from "../../../shared/pet.ts";
 import { Avatar } from "../sprites.tsx";
+import { deriveChatMood, useJustFinished, useTypingPulse } from "../pet/pet-mood.ts";
 import { useLeave } from "../motion.ts";
 import { useDesktopScreens } from "../desktop-screens.ts";
 import {
@@ -28,6 +29,7 @@ import {
   archiveGroup,
   backPanel,
   changeAssistantSkill,
+  composerDraft,
   createRoutine,
   deleteRule,
   deleteRoutine,
@@ -48,7 +50,6 @@ import {
   openGroupSettings,
   openMemberPanel,
   openJob,
-  openJobs,
   openNewRoutine,
   openRoutine,
   patchAssistant,
@@ -126,7 +127,7 @@ export function Panel({ mobile = false, page }: { mobile?: boolean; page?: Panel
   const title = panel.kind === "routine" ? s.routines.find((r) => r.id === panel.id)?.name ?? t("定时任务") : kind === "newRoutine" ? t("新建定时任务") : kind === "routines" ? t("定时任务") : kind === "skills" ? t("技能") : kind === "knowledge" ? t("知识库") : kind === "rules" ? t("执行前确认") : kind === "now" ? "" : kind === "groupSettings" ? t("编辑群") : panel.kind === "artifact" ? panel.name ? t("文档") : t("新建文档") : t("编辑助手");
   return (
     <aside className={`panel${focus ? " desktop-focus" : ""}`} onScroll={(event) => { if (kind === "now") { const card = event.currentTarget.querySelector(".sidebar-card"); const head = event.currentTarget.querySelector(".phead"); setRootScrolled(!!card && !!head && card.getBoundingClientRect().bottom <= head.getBoundingClientRect().bottom); } }}>
-      {!focus ? <PanelHead className="phead" root={kind === "now" && !member} close={false} title={<span className="t">{kind === "now" && !group && !focus && rootScrolled && selectedAssistant ? <span className="sidebar-head-identity"><Avatar sprite={selectedAssistant.sprite} prop={selectedAssistant.prop} size={24} />{selectedAssistant.name}</span> : title}</span>}>
+      {!focus ? <PanelHead className="phead" root={kind === "now" && !member} close={false} title={<span className="t">{kind === "now" && !group && !focus && rootScrolled && selectedAssistant ? <span className="sidebar-head-identity"><Avatar sprite={selectedAssistant.sprite} size={24} />{selectedAssistant.name}</span> : title}</span>}>
         {canExport ? <button className="hob-icon-btn" title={t("导出对话为 Markdown")} aria-label={t("导出对话为 Markdown")} disabled={exporting} onClick={() => void handleExport()}><Icon name={exporting ? "spin" : "dl"} size={17} className={exporting ? "spin" : undefined} /></button> : null}
         {kind === "now" && !group ? <button className="hob-icon-btn" title={t("编辑助手")} onClick={openAssistantPanel}><Icon name="edit" size={17} /></button> : null}
         {kind === "now" && group ? <button className="hob-icon-btn" title={t("编辑群")} onClick={() => openGroupSettings(group.parentId ?? group.id)}><Icon name="edit" size={17} /></button> : null}
@@ -241,7 +242,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
             <div className="gm-row" key={m.id}>
               {/* 点头像或名字：右栏进这个助手的信息页，返回回到群信息 */}
               <button className="gm-open" title={t("{name}的设置", { name: m.name })} onClick={() => openMemberPanel(m.id)}>
-                <Avatar sprite={m.sprite} prop={m.prop} size={30} />
+                <Avatar sprite={m.sprite} size={30} />
                 <span><strong>{m.name}</strong><small>{m.id === g.ownerId ? t("群主 · {duty}", { duty: m.duty }) : m.duty}</small></span>
               </button>
               <em className={count ? "busy" : ""}>{count ? t("进行中 {n}", { n: count }) : busy.has(m.id) ? t("正在发言") : t("空闲")}</em>
@@ -260,7 +261,7 @@ function GroupPanel({ g, topic, mobile }: { g: GroupSummary; topic?: GroupSummar
             </div>
             {s.assistants.filter((a) => !g.members.includes(a.id)).map((a) => (
               <button key={a.id} className="gm-row gm-pick" onClick={() => void change({ members: [...g.members, a.id] }).then((ok) => { if (ok) setAdding(false); })}>
-                <Avatar sprite={a.sprite} prop={a.prop} size={30} />
+                <Avatar sprite={a.sprite} size={30} />
                 <span><strong>{a.name}</strong><small>{a.duty}</small></span>
                 <em className="gm-pick-add"><Icon name="plus" size={14} />{t("加入")}</em>
               </button>
@@ -402,6 +403,11 @@ function PanelNow({ mobile, focus, deskOnly = false, children }: { mobile: boole
       {desktop.error ? <div className="badline">{t("云桌面状态读取失败：{error}", { error: desktop.error })}</div> : null}
     </>;
 
+  const draftText = !deskOnly && s.sel === aid && !s.gsel ? composerDraft(s).text : "";
+  const typing = useTypingPulse(draftText);
+  const activeWork = Boolean(assistant?.busy) || status === "执行中" || status === "排队中";
+  const finished = useJustFinished(activeWork, `panel:${aid}`);
+
   // 群信息页：只放屏幕在跑的那个成员的小屏，身份和任务由群信息自己讲
   if (deskOnly) return desk ? <div className="group-card sidebar-card">{deskBlock}</div> : deskBlock;
 
@@ -417,6 +423,18 @@ function PanelNow({ mobile, focus, deskOnly = false, children }: { mobile: boole
     {screen && screenId ? <Suspense fallback={null}><DesktopScreen initialScreen={screenId} takeOver={screen === "take"} onClose={() => setScreen(null)} /></Suspense> : null}
   </div>;
 
+  const hasError = Boolean(
+    last && (last.status === "failed" || last.status === "stuck") && (!assistant?.readAt || (last.endedAt ?? "") > assistant.readAt),
+  );
+  const panelMood = deriveChatMood({
+    thinking: Boolean(assistant?.busy),
+    busy: activeWork,
+    hasPendingAsk: status === "等你确认",
+    hasError,
+    typing,
+    justFinished: finished.justFinished,
+  });
+
   return (
     <>
     <div className="group-card sidebar-card">
@@ -424,14 +442,16 @@ function PanelNow({ mobile, focus, deskOnly = false, children }: { mobile: boole
         <div className="sidebar-identity">
           <Avatar
             sprite={assistant.sprite}
-            prop={assistant.prop}
             size={54}
             free
             live
             interactive
             follow
-            glow={status !== "空闲"}
-            petState={status === "等你确认" ? "curious" : status === "空闲" ? "idle" : "thinking"}
+            glow={panelMood !== "idle"}
+            petState={panelMood}
+            focusLook={typing ? ([-28, 28] as const) : undefined}
+            action={finished.justFinished ? "bounce" : undefined}
+            actionSeq={finished.seq}
           />
           <span><strong>{assistant.name}</strong><small>{assistant.duty}</small></span>
           <em className={status !== "空闲" ? "active" : ""}><span key={status}>{t(status)}</span></em>
@@ -450,7 +470,7 @@ function PanelNow({ mobile, focus, deskOnly = false, children }: { mobile: boole
 
       {Object.values(s.delegations).filter((delegation) => delegation.from === aid && (delegation.status === "running" || delegation.status === "waiting")).map((delegation) => {
         const target = s.assistants.find((assistant) => assistant.id === delegation.to);
-        return <button className="sidebar-delegation" key={delegation.id} onClick={() => void jumpToDelegation(aid, delegation.id, false)}>{target ? <Avatar sprite={target.sprite} prop={target.prop} size={22} /> : null}<span>{t("交给「{name}」", { name: target?.name ?? delegation.to })}</span><small><StatusTag meta={DELEGATION_STATUS[delegation.status]} /></small> ›</button>;
+        return <button className="sidebar-delegation" key={delegation.id} onClick={() => void jumpToDelegation(aid, delegation.id, false)}>{target ? <Avatar sprite={target.sprite} size={22} /> : null}<span>{t("交给「{name}」", { name: target?.name ?? delegation.to })}</span><small><StatusTag meta={DELEGATION_STATUS[delegation.status]} /></small> ›</button>;
       })}
     </div>
     {children?.(desktopRow)}
@@ -1086,7 +1106,15 @@ function RuleRow({ aid, rule }: { aid: string; rule: Rule }) {
   const save = async (patch: { text?: string; mode?: "ask" | "allow" }) => {
     setBusy(true);
     const error = await updateRule(aid, { id: rule.id, ...patch });
+    setBusy(false);
+    if (!error) setEditing(false);
     setMessage(error ?? t("已保存"));
+  };
+  const remove = async () => {
+    setBusy(true);
+    await deleteRule(aid, rule.id);
+    setBusy(false);
+    setConfirming(false);
   };
   const commitText = () => {
     if (cancel.current) { cancel.current = false; return; }
@@ -1113,6 +1141,13 @@ function RuleRow({ aid, rule }: { aid: string; rule: Rule }) {
           <button className="del" title={t("删除这条规则")} disabled={busy} onClick={() => setConfirming(true)}><Icon name="close" size={13} /></button>
         </span>
       </div>
+      {confirming ? (
+        <div className="rule-confirm">
+          <span>{t("删除这条规则")}？</span>
+          <button type="button" className="hob-btn hob-btn-danger" disabled={busy} onClick={() => void remove()}>{t("删除")}</button>
+          <button type="button" className="hob-btn" disabled={busy} onClick={() => setConfirming(false)}>{t("取消")}</button>
+        </div>
+      ) : null}
       {message ? <SaveMessage message={message} /> : null}
     </div>
   );
@@ -1185,7 +1220,6 @@ function AssistantSettings() {
         <div className="bigav">
           <Avatar
             sprite={shownSprite}
-            prop={a.prop}
             size={112}
             free
             live
@@ -1195,11 +1229,11 @@ function AssistantSettings() {
             morphBounce
             action={petAct.action}
             actionSeq={petAct.seq}
-            onClick={() => setPicking((v) => !v)}
-            title={t("更换头像")}
+            onClick={() => { if (!picking) setPicking(true); }}
+            title={picking ? t("点按或拖动互动") : t("更换头像")}
           />
         </div>
-        <div className="avatar-hint">{t("点击头像更换")}</div>
+        <div className="avatar-hint">{picking ? t("点按或拖动试玩果冻手感") : t("点击头像更换")}</div>
         {picking ? (
           <SpritePicker
             aid={aid}

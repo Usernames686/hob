@@ -18,6 +18,8 @@ import {
   selectGroup,
   setPalette,
   setTheme,
+  togglePanel,
+  toggleSideCollapsed,
   useApp,
   type Theme,
 } from "../store.ts";
@@ -25,10 +27,9 @@ import { GroupCluster } from "./Groups.tsx";
 
 export const CMDK_EVENT = "hob:open-cmdk";
 
-export const CMDK_SHORTCUT =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent)
-    ? "⌘K"
-    : "Ctrl K";
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
+
+export const CMDK_SHORTCUT = IS_MAC ? "⌘K" : "Ctrl K";
 
 export function triggerCommandPalette() {
   window.dispatchEvent(new CustomEvent(CMDK_EVENT));
@@ -39,6 +40,7 @@ interface CommandItem {
   group: string;
   label: string;
   detail?: string;
+  shortcut?: string;
   keywords: string;
   icon: ReactNode;
   run: () => void;
@@ -122,7 +124,7 @@ export function CommandPalette() {
         label: a.name,
         detail: a.duty,
         keywords: `${a.name} ${a.duty} ${a.id}`,
-        icon: <Avatar sprite={a.sprite} prop={a.prop} size={24} />,
+        icon: <Avatar sprite={a.sprite} size={24} />,
         run: () => void openAssistant(a.id),
       });
     }
@@ -162,8 +164,13 @@ export function CommandPalette() {
     }
 
     const navGroup = t("导航");
+    const inChat = s.page === "main" && Boolean(s.sel || s.gsel);
     list.push(
-      { id: "nav:home", group: navGroup, label: t("首页"), keywords: "home", icon: <span className="cmdk-ico"><Icon name="home" size={15} /></span>, run: () => goHome() },
+      { id: "nav:home", group: navGroup, label: t("首页"), shortcut: IS_MAC ? "⇧⌘H" : "Ctrl Shift H", keywords: "home", icon: <span className="cmdk-ico"><Icon name="home" size={15} /></span>, run: () => goHome() },
+      ...(inChat ? [
+        { id: "nav:side", group: navGroup, label: s.sideCollapsed ? t("展开左栏") : t("收起左栏"), shortcut: IS_MAC ? "⌘\\" : "Ctrl \\", keywords: "sidebar left panel collapse expand", icon: <span className="cmdk-ico"><Icon name="panel" size={15} /></span>, run: () => toggleSideCollapsed() },
+        { id: "nav:panel", group: navGroup, label: s.collapsed ? t("展开右栏") : t("收起右栏"), shortcut: IS_MAC ? "⌘." : "Ctrl .", keywords: "inspector right panel collapse expand", icon: <span className="cmdk-ico"><Icon name="panel" size={15} /></span>, run: () => togglePanel() },
+      ] : []),
       { id: "nav:stars", group: navGroup, label: t("收藏"), keywords: "stars favorite", icon: <span className="cmdk-ico"><Icon name="star" size={15} /></span>, run: () => openStars() },
       { id: "nav:plugins", group: navGroup, label: t("插件"), keywords: "plugins", icon: <span className="cmdk-ico"><Icon name="plugin" size={15} /></span>, run: () => openPlugins() },
       { id: "nav:knowledge", group: navGroup, label: t("知识库"), keywords: "knowledge", icon: <span className="cmdk-ico"><Icon name="archive" size={15} /></span>, run: () => openKnowledge() },
@@ -195,7 +202,7 @@ export function CommandPalette() {
       });
     }
     return list;
-  }, [leave.mounted, s.assistants, s.groups, s.jobs, s.theme]);
+  }, [leave.mounted, s.assistants, s.groups, s.jobs, s.theme, s.page, s.sel, s.gsel, s.sideCollapsed, s.collapsed]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -281,6 +288,7 @@ export function CommandPalette() {
                   {item.icon}
                   <span className={`cmdk-label${item.detail ? " has-detail" : ""}`}>{item.label}</span>
                   {item.detail ? <small className="cmdk-detail">{item.detail}</small> : null}
+                  {item.shortcut ? <kbd className="cmdk-kbd">{item.shortcut}</kbd> : null}
                 </button>
               </Fragment>
             );

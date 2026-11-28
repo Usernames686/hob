@@ -83,7 +83,7 @@ export function MemberList({ assistants, members, ownerId, onToggle, onOwner }: 
       <div key={a.id} className={`gc-row${on ? " on" : ""}`}>
         <button type="button" className="gc-pick" aria-pressed={on} onClick={() => onToggle(a.id)}>
           <span className="gc-check">{on ? <Icon name="check" size={13} w={2.4} /> : null}</span>
-          <Avatar sprite={a.sprite} prop={a.prop} size={30} />
+          <Avatar sprite={a.sprite} size={30} />
           <span className="gc-text"><strong>{a.name}</strong><small>{t(a.duty)}</small></span>
         </button>
         {on ? (

@@ -2,7 +2,7 @@
 import "./i18n/en/index.ts";
 import { parseRoute, type SettingsSection } from "./route.ts";
 import { useRef, useSyncExternalStore } from "react";
-import { currentLocale, localeFromBrowser, setLocale as setSharedLocale, t, type Locale } from "../../shared/i18n.ts";
+import { localeFromBrowser, setLocale as setSharedLocale, t, type Locale } from "../../shared/i18n.ts";
 import type {
   PluginModelOverridePatch,
   StarredMessage,
@@ -12,23 +12,19 @@ import type {
   CardRecord,
   Assistant,
   AssistantSummary,
-  Bootstrap,
   ClaudeCodeSettings,
   Delegation,
   Draft,
   FileMeta,
-  Group,
   GroupArtifact,
   GroupArtifactMeta,
   GroupItem,
-  GroupItemsPage,
   GroupProfile,
   GroupSummary,
   HobEvent,
   JobFilesView,
   ImageKeyView,
   ImageSettings,
-  ImageTestResult,
   Item,
   Job,
   JobsPage,
@@ -210,6 +206,8 @@ export interface State {
   menu: { id: string; x: number; y: number } | null; // 助手右键 / 长按菜单（视口坐标）
   tick: number; // 定时刷新“进行中 · N 分钟”
   update: UpdateCheck | null; // 服务端 npm 版本检查结果
+  updateMuted: boolean; // 是否隐藏上游版本更新红点与提示
+  composerModelPicker: boolean; // 对话框底部是否直接外露模型选择按钮
   updateReady: boolean; // 新版本装好了，等用户点「刷新」
   loggingIn: boolean;
   desktopLogin: { approvalId: string; assistantId: string } | null;
@@ -224,6 +222,8 @@ const THEME_KEY = "hob.theme";
 const LOCALE_KEY = "hob.locale";
 const HOME_FILTER_KEY = "hob.home.filter";
 const HOME_ORDER_KEY = "hob.home.order";
+const UPDATE_MUTED_KEY = "hob.update.muted";
+const COMPOSER_MODEL_KEY = "hob.composer.model";
 const UI_KEY = "hob.ui";
 const DRAFTS_KEY = "hob.composer.drafts";
 
@@ -289,6 +289,24 @@ export function loadDesktopWidth(): number | undefined {
 export function saveDesktopWidth(width: number) {
   saveUi({ desktopWidth: Math.round(width) });
 }
+
+export function loadSideWidth(): number | undefined {
+  const width = loadUi().sideWidth;
+  return typeof width === "number" && width >= 248 && width <= 380 ? width : undefined;
+}
+
+export function saveSideWidth(width: number | null) {
+  saveUi({ sideWidth: width === null ? null : Math.round(Math.min(380, Math.max(248, width))) });
+}
+
+export function loadPanelWidth(): number | undefined {
+  const width = loadUi().panelWidth;
+  return typeof width === "number" && width >= 290 && width <= 460 ? width : undefined;
+}
+
+export function savePanelWidth(width: number | null) {
+  saveUi({ panelWidth: width === null ? null : Math.round(Math.min(460, Math.max(290, width))) });
+}
 /** 这台页面客户端的标识：上报可见性；SSE 断了服务端就把这台当不可见。 */
 const CLIENT_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 let watchingVisibility = false;
@@ -306,6 +324,14 @@ function storedHomeFilter(): "all" | "assistants" | "jobs" | "routines" {
 
 function storedHomeOrder(): "recent" | "custom" {
   return localStorage.getItem(HOME_ORDER_KEY) === "custom" ? "custom" : "recent";
+}
+
+function storedUpdateMuted(): boolean {
+  return localStorage.getItem(UPDATE_MUTED_KEY) === "1";
+}
+
+function storedComposerModelPicker(): boolean {
+  return localStorage.getItem(COMPOSER_MODEL_KEY) === "1";
 }
 
 function storedTheme(): Theme | null {
@@ -425,6 +451,8 @@ function initial(): State {
     menu: null,
     tick: 0,
     update: null,
+    updateMuted: storedUpdateMuted(),
+    composerModelPicker: storedComposerModelPicker(),
     updateReady: false,
     loggingIn: false,
     desktopLogin: null,
@@ -464,7 +492,6 @@ function mobileWantsChat(): boolean {
   if (MOCK) return mockMobileChat;
   return !!params.get("a") || !isNarrow();
 }
-let themeExplicit = MOCK || themeFromUrl || storedTheme() !== null;
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State> | ((s: State) => Partial<State>)) {
@@ -3265,6 +3292,11 @@ export function expandPanel() {
   set({ collapsed: false, panelStack: [] });
 }
 
+export function togglePanel() {
+  if (state.collapsed) expandPanel();
+  else collapsePanel();
+}
+
 export function setQuery(query: string) {
   set({ query });
 }
@@ -3277,6 +3309,16 @@ export function setHomeFilter(homeFilter: State["homeFilter"]) {
 export function setHomeOrder(homeOrder: State["homeOrder"]) {
   localStorage.setItem(HOME_ORDER_KEY, homeOrder);
   set({ homeOrder });
+}
+
+export function setUpdateMuted(updateMuted: boolean) {
+  localStorage.setItem(UPDATE_MUTED_KEY, updateMuted ? "1" : "0");
+  set({ updateMuted });
+}
+
+export function setComposerModelPicker(composerModelPicker: boolean) {
+  localStorage.setItem(COMPOSER_MODEL_KEY, composerModelPicker ? "1" : "0");
+  set({ composerModelPicker });
 }
 
 export function setMobile(page: MobilePage) {

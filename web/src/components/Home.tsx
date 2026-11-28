@@ -3,10 +3,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { t } from "../../../shared/i18n.ts";
 import { homeGroups } from "../home.ts";
 import { Icon } from "../icons.tsx";
+import { deriveHomeMood, typingLook, useIdleSleep, useTypingPulse } from "../pet/pet-mood.ts";
 import { Avatar } from "../sprites.tsx";
 import { openJob, openJobs, select, selectGroup, send, useApp } from "../store.ts";
 import { sendName } from "./Chat.tsx";
-import { JOB_STATUS, StatusTag } from "./status-meta.tsx";
 
 function greeting(hour = new Date().getHours()): string {
   if (hour < 6) return t("夜深了");
@@ -19,6 +19,8 @@ function greeting(hour = new Date().getHours()): string {
 export function Home() {
   const s = useApp();
   const [text, setDraft] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [caret, setCaret] = useState(0);
   const ta = useRef<HTMLTextAreaElement>(null);
   const primary = s.assistants.find((a) => a.primary) ?? s.assistants[0];
   const g = homeGroups(s);
@@ -59,12 +61,21 @@ export function Home() {
     void send(body);
   };
 
-  const liveCards = g.live.slice(0, 3);
+  const liveCards = g.live.slice(0, 4);
   const askCards = g.asks.slice(0, 2);
   const hiddenCount = (g.asks.length - askCards.length) + (g.live.length - liveCards.length);
 
   const hour = new Date().getHours();
-  const heroState = waiting > 0 ? "curious" : g.live.length > 0 ? "thinking" : hour < 6 ? "sleeping" : "idle";
+  const isLateNight = hour < 6;
+  const typing = useTypingPulse(text);
+  const watchingInput = focused || typing;
+  const idleAsleep = useIdleSleep(!watchingInput && waiting === 0 && g.live.length === 0, isLateNight ? 20000 : 60000, isLateNight);
+  const heroState = deriveHomeMood({ waitingCount: waiting, liveCount: g.live.length, typing: watchingInput, idleAsleep });
+  const taEl = ta.current;
+  const taStyle = taEl && typeof getComputedStyle === "function" ? getComputedStyle(taEl) : null;
+  const taFont = taStyle ? `${taStyle.fontWeight} ${taStyle.fontSize} ${taStyle.fontFamily}` : undefined;
+  const taWidth = taEl ? Math.max(180, taEl.clientWidth - (parseFloat(taStyle?.paddingLeft || "0") + parseFloat(taStyle?.paddingRight || "0"))) : 480;
+  const heroFocusLook = watchingInput ? typingLook(text, caret, taWidth, taFont) : undefined;
 
   return (
     <main className="home">
@@ -72,18 +83,24 @@ export function Home() {
         {primary ? (
           <Avatar
             sprite={primary.sprite}
-            prop={primary.prop}
             size={112}
             free
             live
             interactive
             follow
+            ambient
             petState={heroState}
-            glow={waiting > 0 || g.live.length > 0}
+            focusLook={heroFocusLook}
+            glow={watchingInput || waiting > 0 || g.live.length > 0}
           />
         ) : null}
         <h1>{greeting(hour)}</h1>
-        <p className="home-sum">{summary}</p>
+        <p className="home-sum">
+          <span className="home-sum-pill">
+            <span className={`home-sum-dot${waiting > 0 ? " ask" : g.live.length > 0 ? " live" : ""}`} aria-hidden="true" />
+            {summary}
+          </span>
+        </p>
         <div className="comp home-ask">
           <div className="comp-main">
             <textarea
@@ -92,7 +109,18 @@ export function Home() {
               rows={1}
               value={text}
               placeholder={t("有事跟{assistant}说，它来安排", { assistant: sendName(primary?.name ?? "Hob") })}
-              onChange={(e) => setDraft(e.target.value)}
+              onFocus={(e) => {
+                setFocused(true);
+                setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
+              }}
+              onBlur={() => setFocused(false)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setCaret(e.target.selectionStart ?? e.target.value.length);
+              }}
+              onCompositionUpdate={(e) => setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
+              onKeyUp={(e) => setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
+              onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -106,59 +134,79 @@ export function Home() {
           </div>
         </div>
         {askCards.length || liveCards.length ? (
-          <div className="home-cards">
-            {askCards.map((ap) => {
-              const owner = s.assistants.find((a) => a.id === ap.assistantId);
-              return (
-                <button
-                  key={ap.id}
-                  type="button"
-                  className="home-card ask"
-                  onClick={() => {
-                    if (ap.jobId && s.jobs[ap.jobId]?.groupId) void selectGroup(s.jobs[ap.jobId]!.groupId!);
-                    else void select(ap.assistantId);
-                  }}
-                >
-                  {owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={30} mark="ask" /> : null}
-                  <span className="home-card-body">
-                    <strong>{ap.title}</strong>
-                    <small>{owner?.name ?? ap.assistantId}</small>
-                  </span>
-                  <span className="home-card-tag ask">{t("等你确认")}</span>
-                </button>
-              );
-            })}
-            {liveCards.map((job) => {
-              const owner = s.assistants.find((a) => a.id === job.assistantId);
-              return (
-                <button
-                  key={job.id}
-                  type="button"
-                  className="home-card"
-                  onClick={() => {
-                    if (job.groupId) void selectGroup(job.groupId, true, false, true);
-                    else if (owner) void select(owner.id);
-                    openJob(job.id);
-                  }}
-                >
-                  {owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={30} mark="busy" /> : null}
-                  <span className="home-card-body">
-                    <strong>{job.title}</strong>
-                    <small>{owner?.name ?? job.assistantId}</small>
-                  </span>
-                  <StatusTag meta={JOB_STATUS[job.status]} card />
-                </button>
-              );
-            })}
-            {hiddenCount > 0 ? (
-              <button type="button" className="home-card home-card-more" onClick={() => openJobs()}>
-                <Icon name="tasks" size={16} />
-                <span className="home-card-body">
-                  <strong>{t("还有 {n} 项待处理", { n: hiddenCount })}</strong>
-                  <small>{t("查看全部任务")}</small>
-                </span>
-                <Icon name="chev" size={14} />
-              </button>
+          <div className="home-deck">
+            {askCards.length ? (
+              <section className="home-sec">
+                <div className="home-sec-head ask">
+                  <span>{t("等你确认")}</span>
+                  {!liveCards.length && hiddenCount > 0 ? (
+                    <button type="button" className="home-sec-more" onClick={() => openJobs()}>
+                      <span>{t("查看全部任务")}</span>
+                      <Icon name="chev" size={12} />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="home-cards">
+                  {askCards.map((ap) => {
+                    const owner = s.assistants.find((a) => a.id === ap.assistantId);
+                    return (
+                      <button
+                        key={ap.id}
+                        type="button"
+                        className="home-card ask"
+                        onClick={() => {
+                          if (ap.jobId && s.jobs[ap.jobId]?.groupId) void selectGroup(s.jobs[ap.jobId]!.groupId!);
+                          else void select(ap.assistantId);
+                        }}
+                      >
+                        {owner ? <Avatar sprite={owner.sprite} size={30} mark="ask" /> : null}
+                        <span className="home-card-body">
+                          <strong>{ap.title}</strong>
+                          <small>{owner?.name ?? ap.assistantId}</small>
+                        </span>
+                        <span className="home-card-tag ask">{t("等你确认")}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+            {liveCards.length ? (
+              <section className="home-sec">
+                <div className="home-sec-head">
+                  <span>{t("进行中")}</span>
+                  {hiddenCount > 0 ? (
+                    <button type="button" className="home-sec-more" onClick={() => openJobs()}>
+                      <span>{t("查看全部任务")}</span>
+                      <Icon name="chev" size={12} />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="home-live">
+                  {liveCards.map((job) => {
+                    const owner = s.assistants.find((a) => a.id === job.assistantId);
+                    return (
+                      <button
+                        key={job.id}
+                        type="button"
+                        className="home-live-chip"
+                        onClick={() => {
+                          if (job.groupId) void selectGroup(job.groupId, true, false, true);
+                          else if (owner) void select(owner.id);
+                          openJob(job.id);
+                        }}
+                      >
+                        {owner ? <Avatar sprite={owner.sprite} size={24} /> : null}
+                        <span className="home-live-txt">
+                          <strong>{job.title}</strong>
+                          <small>{owner?.name ?? job.assistantId}</small>
+                        </span>
+                        <Icon name="spin" size={13} className="spin" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
             ) : null}
           </div>
         ) : null}

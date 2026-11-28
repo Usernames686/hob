@@ -12,11 +12,11 @@ const page = () => renderToStaticMarkup(<AboutView about={{ version: "1.5.0", ho
 describe("设置页的关于", () => {
   it("带一个指向仓库的 GitHub 入口，点击在新窗口打开", () => {
     const html = page();
-    expect(html).toContain('href="https://github.com/FFatTiger/hob"');
+    expect(html).toContain('href="https://github.com/Usernames686/hob/tree/my-hob"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noreferrer"');
     expect(html).toContain(">GitHub</span>");
-    expect(html).toContain("FFatTiger/hob");
+    expect(html).toContain("Usernames686/hob · my-hob");
   });
 
   it("图标是内联 SVG，除了仓库地址不再引用外部资源", () => {

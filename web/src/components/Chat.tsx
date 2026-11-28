@@ -16,6 +16,7 @@ import { fitThinking, rosterOptions } from "../model-list.ts";
 import { fmtWhen } from "../util.ts";
 import { groupThinkingText, queuedMembersLabel } from "../group-thinking.ts";
 import { Avatar } from "../sprites.tsx";
+import { deriveChatMood, typingLook, useJustFinished, useTypingPulse } from "../pet/pet-mood.ts";
 import { applyMention, filterMembers, groupSuggestionPrefix, mentionAt, stepPick } from "../mention.ts";
 import {
   collapsePanel,
@@ -40,7 +41,6 @@ import {
   resumeGroupQueue,
   saveGroupArtifact,
   send,
-  selectGroup,
   setNotice,
   setQuote,
   setSection,
@@ -84,7 +84,7 @@ function Thinking({ leaving, gap, a }: { leaving: boolean; gap: boolean; a: Assi
       {gap ? <div className="g" /> : null}
       <div className={`hov think${leaving ? " leaving" : ""}`}>
         <div className="activity-line" role="status">
-          <Avatar sprite={a.sprite} prop={a.prop} size={46} free live interactive={false} glow motion={a.activity?.state === "tool" ? "work" : "think"} />
+          <Avatar sprite={a.sprite} size={46} free live interactive={false} glow motion={a.activity?.state === "tool" ? "work" : "think"} />
           <span className="activity-shimmer">{a.activity?.label ?? t("正在思考…")}</span>
         </div>
       </div>
@@ -263,7 +263,29 @@ function ChatHead({ g, a, parent, mobile, hasRightBtn }: { g?: GroupSummary; a?:
   const size = mobile ? 32 : 30;
   const owner = g && parent ? s.assistants.find((x) => x.id === g.ownerId) : undefined;
   const busy = g ? g.busy.length > 0 : Boolean(a?.busy);
-  const face = owner ? <Avatar sprite={owner.sprite} prop={owner.prop} size={size} live follow interactive={false} motion={busy ? "think" : undefined} /> : g ? <GroupCluster g={g} assistants={s.assistants} size={size} /> : a ? <Avatar sprite={a.sprite} prop={a.prop} size={size} live follow interactive={false} motion={busy ? "think" : undefined} /> : null;
+  const draftText = composerDraft(s).text;
+  const typing = useTypingPulse(draftText);
+  const scopeKey = g ? `g:${g.id}` : `a:${a?.id ?? ""}`;
+  const finished = useJustFinished(busy, scopeKey);
+  const hasPendingAsk = a ? Object.values(s.approvals).some((ap) => ap.assistantId === a.id && ap.status === "pending") : false;
+  const hasError = Boolean(s.notice && /失败|出错|错误|异常|error|failed/i.test(s.notice));
+  const headMood = deriveChatMood({
+    thinking: busy,
+    busy,
+    hasPendingAsk,
+    hasError,
+    typing,
+    justFinished: finished.justFinished,
+  });
+  const headLook = typing ? typingLook(draftText) : undefined;
+  const headAction = finished.justFinished ? ("bounce" as const) : undefined;
+  const face = owner ? (
+    <Avatar sprite={owner.sprite} size={size} live follow interactive={false} petState={headMood} focusLook={headLook} action={headAction} actionSeq={finished.seq} />
+  ) : g ? (
+    <GroupCluster g={g} assistants={s.assistants} size={size} />
+  ) : a ? (
+    <Avatar sprite={a.sprite} size={size} live follow interactive={false} petState={headMood} focusLook={headLook} action={headAction} actionSeq={finished.seq} />
+  ) : null;
   // 话题只写话题名：在哪个群，左栏（手机上是返回键）已经交代了；名字长了一行省略，悬停看全名
   const sub = g && !parent ? <span className="ccap-sub">{t("综合 · {n} 位成员", { n: g.members.length })}</span> : null;
   const name = g?.name ?? a?.name ?? "";
@@ -319,7 +341,7 @@ function EmptyChat({ a }: { a: AssistantSummary }) {
   const ready = models.roster.length > 0 && models.conversation.ref !== "";
   return (
     <div className="hello">
-      <Avatar sprite={a.sprite} prop={a.prop} size={108} free live interactive follow motion="home" />
+      <Avatar sprite={a.sprite} size={108} free live interactive follow ambient motion="home" />
       <div className="t">{a.primary ? t("我是{assistant}，你的主助手", { assistant: sendName(a.name, false) }) : t("我是{assistant}", { assistant: sendName(a.name, false) })}</div>
       <div className="d">
         {a.primary
@@ -379,7 +401,7 @@ function GroupQueueTrail({ g }: { g: GroupSummary }) {
             <span className="group-queue-step" key={id}>
               {i > 0 ? <span className="group-queue-arrow" aria-hidden="true">→</span> : null}
               <span className="group-queue-chip">
-                {m ? <Avatar sprite={m.sprite} prop={m.prop} size={18} /> : null}
+                {m ? <Avatar sprite={m.sprite} size={18} /> : null}
                 <span>{name}</span>
               </span>
             </span>
@@ -407,7 +429,7 @@ function GroupThinking({ g }: { g: GroupSummary }) {
         return (
           <div className="hov think" key={id}>
             <div className="activity-line" role="status">
-              <Avatar sprite={m.sprite} prop={m.prop} size={40} free live interactive={false} glow motion={activity?.state === "tool" ? "work" : "think"} />
+              <Avatar sprite={m.sprite} size={40} free live interactive={false} glow motion={activity?.state === "tool" ? "work" : "think"} />
               <span className="activity-shimmer">{groupThinkingText(sendName(m.name), activity)}</span>
             </div>
           </div>
@@ -569,7 +591,7 @@ function SaveArtifactDialog({ groupId, content, onClose }: { groupId: string; co
   );
 }
 
-function ConversationBody({ className, scrollRef, onScroll, state, scrollId, think, stick, mobile = false }: { className: string; scrollRef: React.RefObject<HTMLDivElement | null>; onScroll: React.UIEventHandler<HTMLDivElement>; state: ReturnType<typeof conversationState>; scrollId: string | null; think: ReturnType<typeof useLeave>; stick: { atBottom: boolean; toBottom: () => void }; mobile?: boolean }) {
+function ConversationBody({ className, scrollRef, onScroll, state, scrollId, think, stick }: { className: string; scrollRef: React.RefObject<HTMLDivElement | null>; onScroll: React.UIEventHandler<HTMLDivElement>; state: ReturnType<typeof conversationState>; scrollId: string | null; think: ReturnType<typeof useLeave>; stick: { atBottom: boolean; toBottom: () => void } }) {
   const { g, a, items, empty, busy } = state;
   const s = useApp();
   const assistants = s.assistants;
@@ -982,8 +1004,80 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
     };
   }, [variant]);
 
+  const showModelPill = Boolean(s.composerModelPicker);
+  const compactComposer = !g && !showModelPill;
+  const textareaEl = (
+    <textarea
+      ref={ta}
+      className="ta"
+      rows={1}
+      value={draft.text}
+      placeholder={g ? (
+        g.replyMode === "all"
+          ? (g.parentId ? t("在此话题中发言，未点名时全员依次回应") : t("在综合中发言，未点名时全员依次回应"))
+          : g.replyMode === "auto"
+            ? (g.parentId ? t("在此话题中发言，未点名时自动选人回应") : t("在综合中发言，未点名时自动选人回应"))
+          : (g.parentId ? t("在此话题中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }) : t("在综合中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }))
+      ) : t("给{assistant}发消息", { assistant: sendName(a?.name ?? "") })}
+      onChange={(e) => {
+        setText(e.target.value);
+        setCaret(e.target.selectionStart ?? e.target.value.length);
+      }}
+      onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+      onKeyDown={(e) => {
+        if (showing) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setPick((i) => stepPick(i, 1, options.length));
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setPick((i) => stepPick(i, -1, options.length));
+            return;
+          }
+          if ((e.key === "Enter" && !e.nativeEvent.isComposing) || e.key === "Tab") {
+            e.preventDefault();
+            choose(options[active]);
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setMuted(draft.text);
+            return;
+          }
+        }
+        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          void send();
+        }
+      }}
+    />
+  );
+  const sendEl = (
+    <div className="comp-send">
+      {/* 正在说话时始终可以叫停；同时写了草稿也不挤掉停止按钮 */}
+      {canStop ? (
+        <button
+          className={`sendbtn stop${has ? " stop-inline" : ""}`}
+          title={stopping ? t("正在停止…") : t("停止")}
+          aria-label={stopping ? t("正在停止…") : t("停止")}
+          disabled={stopping}
+          onClick={handleStop}
+        >
+          {stopping ? <Icon name="spin" size={16} className="spin" /> : <Icon name="stop" size={18} />}
+        </button>
+      ) : null}
+      {!canStop || has ? (
+        <button className={`sendbtn${has ? " ready" : ""}`} title={t("发送")} aria-label={t("发送")} disabled={!has} onClick={() => void send()}>
+          <Icon name="send" size={17} />
+        </button>
+      ) : null}
+    </div>
+  );
+
   const body = (
-    <div className={variant === "mobile" ? "mcomp" : "comp"} ref={compRef} onPaste={onPaste}>
+    <div className={`${variant === "mobile" ? "mcomp" : "comp"}${compactComposer ? " compact" : ""}`} ref={compRef} onPaste={onPaste}>
       <TodoStrip items={todos} jobs={jobs} busy={g ? g.busy.length > 0 : Boolean(a?.busy)} onOpenJob={(id) => openJob(id)} />
       {quote.mounted ? (
         <div className={`comp-quote${quote.leaving ? " leaving" : ""}`}>
@@ -1043,7 +1137,7 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
               onMouseEnter={() => setPick(i)}
               onClick={() => choose(m)}
             >
-              <Avatar sprite={m.sprite} prop={m.prop} size={26} />
+              <Avatar sprite={m.sprite} size={26} />
               <strong>{m.name}</strong>
               <small>{m.id === g?.ownerId ? t("群主 · {duty}", { duty: m.duty }) : m.duty}</small>
             </button>
@@ -1092,82 +1186,27 @@ export function Composer({ variant = "desktop", todos, jobs }: { variant?: "desk
           </span>
         </div>
       ) : null}
-      <div className="comp-main comp-island">
-        <div className="comp-input-row">
-          <textarea
-            ref={ta}
-            className="ta"
-            rows={1}
-            value={draft.text}
-            placeholder={g ? (
-              g.replyMode === "all"
-                ? (g.parentId ? t("在此话题中发言，未点名时全员依次回应") : t("在综合中发言，未点名时全员依次回应"))
-                : g.replyMode === "auto"
-                  ? (g.parentId ? t("在此话题中发言，未点名时自动选人回应") : t("在综合中发言，未点名时自动选人回应"))
-                : (g.parentId ? t("在此话题中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }) : t("在综合中发言，未点名时由{owner}接手", { owner: sendName(owner?.name ?? "") }))
-            ) : t("给{assistant}发消息", { assistant: sendName(a?.name ?? "") })}
-            onChange={(e) => {
-              setText(e.target.value);
-              setCaret(e.target.selectionStart ?? e.target.value.length);
-            }}
-            onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
-            onKeyDown={(e) => {
-              if (showing) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setPick((i) => stepPick(i, 1, options.length));
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setPick((i) => stepPick(i, -1, options.length));
-                  return;
-                }
-                if ((e.key === "Enter" && !e.nativeEvent.isComposing) || e.key === "Tab") {
-                  e.preventDefault();
-                  choose(options[active]);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setMuted(draft.text);
-                  return;
-                }
-              }
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
+      {compactComposer ? (
+        <div className="comp-main comp-compact">
+          <ComposerPlus g={g} a={a} onFiles={attach} />
+          {textareaEl}
+          {sendEl}
         </div>
-        <div className="comp-bar">
-          <div className="comp-tools">
-            <ComposerPlus g={g} a={a} onFiles={attach} />
-            <ComposerModelPill g={g} a={a} />
-            {g ? <ComposerReplyPill g={g} /> : null}
+      ) : (
+        <div className="comp-main comp-island">
+          <div className="comp-input-row">
+            {textareaEl}
           </div>
-          <div className="comp-send">
-            {/* 正在说话时始终可以叫停；同时写了草稿也不挤掉停止按钮 */}
-            {canStop ? (
-              <button
-                className={`sendbtn stop${has ? " stop-inline" : ""}`}
-                title={stopping ? t("正在停止…") : t("停止")}
-                aria-label={stopping ? t("正在停止…") : t("停止")}
-                disabled={stopping}
-                onClick={handleStop}
-              >
-                {stopping ? <Icon name="spin" size={16} className="spin" /> : <Icon name="stop" size={18} />}
-              </button>
-            ) : null}
-            {!canStop || has ? (
-              <button className={`sendbtn${has ? " ready" : ""}`} title={t("发送")} aria-label={t("发送")} disabled={!has} onClick={() => void send()}>
-                <Icon name="send" size={17} />
-              </button>
-            ) : null}
+          <div className="comp-bar">
+            <div className="comp-tools">
+              <ComposerPlus g={g} a={a} onFiles={attach} />
+              {showModelPill ? <ComposerModelPill g={g} a={a} /> : null}
+              {g ? <ComposerReplyPill g={g} /> : null}
+            </div>
+            {sendEl}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
@@ -1204,7 +1243,7 @@ export function ChatPage() {
           <Icon name="more" size={20} />
         </button>
       </div>
-      <ConversationBody className="mmsgs" scrollRef={scrollRef} onScroll={onScroll} state={{ g, a, items, loaded, busy, empty, thinking }} scrollId={scrollId} think={think} stick={stick} mobile />
+      <ConversationBody className="mmsgs" scrollRef={scrollRef} onScroll={onScroll} state={{ g, a, items, loaded, busy, empty, thinking }} scrollId={scrollId} think={think} stick={stick} />
       {g?.closedAt ? <ClosedTopic g={g} /> : <Composer variant="mobile" todos={g ? g.todos : a?.todos} jobs={runningJobs(s, items)} />}
     </>
   );

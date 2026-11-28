@@ -15,7 +15,7 @@ import { CMDK_SHORTCUT, triggerCommandPalette } from "./CommandPalette.tsx";
 
 export function SideFoot() {
   const s = useApp();
-  const updateVersion = availableVersion(s.update);
+  const updateVersion = availableVersion(s.update, s.updateMuted);
   const stars = t("收藏");
   const plugins = t("插件");
   const knowledge = t("知识库");

@@ -1,10 +1,9 @@
 // GrokBot 极简果冻宠物核心数据与数学引擎（前后端共用，零外部依赖）：
-// 20 种 48 点无扭曲 Morph 单轮廓剪影 + 11 套官方高饱和色板 + 11 种居中参数化表情 + 10 种核心状态 + 阻尼谐振弹簧。
+// 20 种 48 点无扭曲 Morph 单轮廓剪影 + 11 套官方高饱和色板 + 12 种居中参数化表情 + 10 种核心状态 + 阻尼谐振弹簧。
 
 export type Point2 = [number, number];
 
 export const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
-export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 export const ringToPath = (ring: readonly Point2[]): string =>
   "M" + ring.map((p) => `${p[0].toFixed(2)} ${p[1].toFixed(2)}`).join("L") + "Z";
@@ -519,7 +518,7 @@ export const PET_SHAPES = {
 export type PetShapeId = keyof typeof PET_SHAPES;
 export const PET_SHAPE_IDS = Object.keys(PET_SHAPES) as PetShapeId[];
 
-/* ---------------- 11 种居中参数化 48 点表情 ---------------- */
+/* ---------------- 12 种居中参数化 48 点表情 ---------------- */
 
 function makePillEye({
   rx = 10.5,
@@ -649,19 +648,25 @@ function exprDef(left: Point2[], right: Point2[], gap: number, offsetY: number):
 
 export const PET_EXPRESSIONS = {
   neutral: exprDef(makePillEye({ rx: 10.5, ry: 24, power: 2.6 }), makePillEye({ rx: 10.5, ry: 24, power: 2.6 }), 22, -2),
-  listening: exprDef(makePillEye({ rx: 11.5, ry: 26.5, power: 2.5 }), makePillEye({ rx: 11.5, ry: 26.5, power: 2.5 }), 23, -3),
+  listening: exprDef(makePillEye({ rx: 12.5, ry: 25.5, power: 2.2 }), makePillEye({ rx: 12.5, ry: 25.5, power: 2.2 }), 23, -2),
   thinking: exprDef(
-    makePillEye({ rx: 11, ry: 22, power: 2.4, topCut: 0.34, bottomCut: 0.14, topSlope: 0.25 }),
-    makePillEye({ rx: 11, ry: 23.5, power: 2.5, topCut: 0.14, bottomCut: 0.08 }),
-    23,
+    makePillEye({ rx: 11.5, ry: 21.5, power: 2.4, topCut: 0.44, bottomCut: 0.18, topSlope: 0.55, tiltDeg: 6 }),
+    makePillEye({ rx: 11.5, ry: 23, power: 2.4, topCut: 0.22, bottomCut: 0.1, topSlope: -0.25 }),
+    24,
     -5,
   ),
   happy: exprDef(makeArcEye({ width: 29, archHeight: 13.5, thickness: 8.6, flip: false }), makeArcEye({ width: 29, archHeight: 13.5, thickness: 8.6, flip: false }), 25, -1),
+  wink: exprDef(
+    makeArcEye({ width: 29, archHeight: 13.5, thickness: 8.6, flip: false }),
+    makePillEye({ rx: 12.5, ry: 25.5, power: 2.3, cheekArch: 0.25 }),
+    25,
+    -1,
+  ),
   excited: exprDef(makePillEye({ rx: 13.5, ry: 28, power: 2.3, cheekArch: 0.35 }), makePillEye({ rx: 13.5, ry: 28, power: 2.3, cheekArch: 0.35 }), 25, -3),
   surprised: exprDef(makePillEye({ rx: 16.5, ry: 20.5, power: 2.0 }), makePillEye({ rx: 16.5, ry: 20.5, power: 2.0 }), 27, -2),
-  curious: exprDef(makePillEye({ rx: 9.5, ry: 16, power: 2.2, shiftY: 2 }), makePillEye({ rx: 13.5, ry: 27.5, power: 2.4, shiftY: -2 }), 24, -2),
-  shy: exprDef(makePillEye({ rx: 12.5, ry: 18, power: 2.3, bottomCut: 0.28, cheekArch: 0.55, tiltDeg: -7 }), makePillEye({ rx: 12.5, ry: 18, power: 2.3, bottomCut: 0.28, cheekArch: 0.55, tiltDeg: 7 }), 22, 4),
-  sad: exprDef(makePillEye({ rx: 11, ry: 21, power: 2.4, topCut: 0.32, topSlope: -0.95, tiltDeg: -10 }), makePillEye({ rx: 11, ry: 21, power: 2.4, topCut: 0.32, topSlope: 0.95, tiltDeg: 10 }), 24, 5),
+  curious: exprDef(makePillEye({ rx: 8.8, ry: 14.5, power: 2.2, shiftY: 3 }), makePillEye({ rx: 14.5, ry: 28.5, power: 2.3, shiftY: -2.5 }), 25, -2),
+  shy: exprDef(makePillEye({ rx: 13.5, ry: 16.5, power: 2.2, bottomCut: 0.34, cheekArch: 0.65, tiltDeg: -10 }), makePillEye({ rx: 13.5, ry: 16.5, power: 2.2, bottomCut: 0.34, cheekArch: 0.65, tiltDeg: 10 }), 23, 5),
+  sad: exprDef(makePillEye({ rx: 11, ry: 21, power: 2.4, topCut: 0.34, topSlope: -1.0, tiltDeg: -12 }), makePillEye({ rx: 11, ry: 21, power: 2.4, topCut: 0.34, topSlope: 1.0, tiltDeg: 12 }), 24, 5),
   sleeping: exprDef(makeArcEye({ width: 27, archHeight: 10.5, thickness: 7.4, flip: true }), makeArcEye({ width: 27, archHeight: 10.5, thickness: 7.4, flip: true }), 24, 5),
   squeeze: exprDef(makeChevronEye({ width: 19, height: 22, thickness: 7.6, pointingRight: true }), makeChevronEye({ width: 19, height: 22, thickness: 7.6, pointingRight: false }), 24, 0),
 } as const satisfies Record<string, PetExpressionSpec>;
@@ -669,7 +674,6 @@ export const PET_EXPRESSIONS = {
 export type PetExpressionId = keyof typeof PET_EXPRESSIONS;
 
 export interface PetStateSpec {
-  label: string;
   expression: PetExpressionId;
   blink: [number, number] | null;
   glowPulse: number;
@@ -678,16 +682,16 @@ export interface PetStateSpec {
 }
 
 export const PET_STATES = {
-  idle: { label: "待机", expression: "neutral", blink: [3400, 6800], glowPulse: 0.25, motion: "breathe", lookBias: [0, 0] },
-  listening: { label: "倾听", expression: "listening", blink: [2800, 5600], glowPulse: 0.45, motion: "listen", lookBias: [4, -2] },
-  thinking: { label: "思考", expression: "thinking", blink: [3200, 6200], glowPulse: 0.7, motion: "think", lookBias: [10, -7] },
-  happy: { label: "开心", expression: "happy", blink: null, glowPulse: 0.65, motion: "happy", lookBias: [0, -2] },
-  excited: { label: "兴奋", expression: "excited", blink: [2200, 4200], glowPulse: 0.85, motion: "excited", lookBias: [0, -3] },
-  surprised: { label: "惊讶", expression: "surprised", blink: [2600, 5000], glowPulse: 0.75, motion: "pop", lookBias: [0, -2] },
-  curious: { label: "好奇", expression: "curious", blink: [2600, 5200], glowPulse: 0.5, motion: "curious", lookBias: [6, -2] },
-  shy: { label: "害羞", expression: "shy", blink: [2400, 4800], glowPulse: 0.4, motion: "shy", lookBias: [-6, 5] },
-  sad: { label: "难过", expression: "sad", blink: [3800, 7400], glowPulse: 0.15, motion: "sad", lookBias: [0, 7] },
-  sleeping: { label: "休眠", expression: "sleeping", blink: null, glowPulse: 0.12, motion: "sleep", lookBias: [0, 5] },
+  idle: { expression: "neutral", blink: [3400, 6800], glowPulse: 0.25, motion: "breathe", lookBias: [0, 0] },
+  listening: { expression: "listening", blink: [2800, 5600], glowPulse: 0.45, motion: "listen", lookBias: [4, -2] },
+  thinking: { expression: "thinking", blink: [3200, 6200], glowPulse: 0.7, motion: "think", lookBias: [10, -7] },
+  happy: { expression: "happy", blink: null, glowPulse: 0.65, motion: "happy", lookBias: [0, -2] },
+  excited: { expression: "excited", blink: [2200, 4200], glowPulse: 0.85, motion: "excited", lookBias: [0, -3] },
+  surprised: { expression: "surprised", blink: [2600, 5000], glowPulse: 0.75, motion: "pop", lookBias: [0, -2] },
+  curious: { expression: "curious", blink: [2600, 5200], glowPulse: 0.5, motion: "curious", lookBias: [6, -2] },
+  shy: { expression: "shy", blink: [2400, 4800], glowPulse: 0.4, motion: "shy", lookBias: [-6, 5] },
+  sad: { expression: "sad", blink: [3800, 7400], glowPulse: 0.15, motion: "sad", lookBias: [0, 7] },
+  sleeping: { expression: "sleeping", blink: null, glowPulse: 0.12, motion: "sleep", lookBias: [0, 5] },
 } as const satisfies Record<string, PetStateSpec>;
 
 export type PetStateId = keyof typeof PET_STATES;
@@ -841,7 +845,7 @@ export function distinctPetSprite(sprite: string | undefined, taken: string[]): 
   return free ? petSpriteId(direct.shape, free) : petSpriteId(direct.shape, direct.color);
 }
 
-export function hexToRgb(hex: string): [number, number, number] {
+function hexToRgb(hex: string): [number, number, number] {
   const clean = hex.replace("#", "").trim();
   if (clean.length === 6) {
     return [parseInt(clean.slice(0, 2), 16), parseInt(clean.slice(2, 4), 16), parseInt(clean.slice(4, 6), 16)];

@@ -19,6 +19,8 @@ export const conversationEn: Record<string, TranslationEntry> = {
   "来自任务 {name}": "From job {name}",
   "来自和 {name} 的对话": "From a conversation with {name}",
   "拖动调整云桌面宽度": "Drag to resize the cloud desktop",
+  "拖动调整左栏宽度": "Drag to resize the left sidebar",
+  "拖动调整右栏宽度": "Drag to resize the right panel",
   "任务记录": "Job history",
   "关": "Off",
   "无法读取这个任务。": "Couldn't read this job.",
@@ -550,6 +552,5 @@ export const conversationEn: Record<string, TranslationEntry> = {
   "继续编辑": "Keep editing",
   "对话模型（应用到整个群）": "Conversation model (applies to the whole group)",
   "切换后应用到整个群": "Applies to the whole group",
-  "还有 {n} 项待处理": "{n} more items waiting",
   "删除知识库": "Delete knowledge base",
 };

@@ -20,7 +20,7 @@ import {
 } from "../../../shared/pet.ts";
 import { subscribePetFrame, subscribePetPointer } from "./pet-ticker.ts";
 
-const PLAYFUL_ACTIONS: readonly PetActionId[] = ["bounce", "celebrate", "peek", "squish", "pinch", "shake"];
+const AMBIENT_DRAMAS: readonly PetExpressionId[] = ["wink", "curious", "happy"];
 
 interface ExprSnapshot {
   left: Point2[];
@@ -112,11 +112,12 @@ export function LivePet({
   follow = true,
   followZone,
   defaultLook,
+  focusLook,
   glowEnabled = false,
   morphBounce = false,
+  ambient = false,
   action,
   actionSeq = 0,
-  onPoke,
 }: {
   shape: PetShapeId;
   body: string;
@@ -124,7 +125,7 @@ export function LivePet({
   glow: string;
   isDarkBody: boolean;
   state?: PetStateId;
-  /** 允许点击戳一戳（> < Q弹）与双击果冻动作 */
+  /** 允许点击戳一戳（连戳分阶段情绪反馈）与双击果冻动作 */
   interactive?: boolean;
   /** interactive 时是否允许拖拽拉扯（列表置顶位需留给排序手势，设为 false） */
   draggable?: boolean;
@@ -134,13 +135,16 @@ export function LivePet({
   followZone?: RefObject<HTMLElement | null>;
   /** 待机默认视线偏置 [turnDeg, gazeY]，例如 [11, -7] 表示默认向右上方瞟 */
   defaultLook?: readonly [number, number];
+  /** 主动注视目标 [turnDeg, gazeY]（如低头追看输入框打字），覆盖鼠标滞留与默认状态视线 */
+  focusLook?: readonly [number, number];
   /** 是否开启情绪光晕 */
   glowEnabled?: boolean;
   /** 切换造型或颜色时自动播放 Q 弹 Morph 回弹 */
   morphBounce?: boolean;
+  /** 开启主球低频空闲微剧场与轻抚手势（仅用于首页/关于页大球） */
+  ambient?: boolean;
   action?: PetActionId;
   actionSeq?: number;
-  onPoke?: () => void;
 }) {
   const uid = useId().replace(/:/g, "");
   const haloGradId = `pet-halo-${uid}`;
@@ -155,12 +159,12 @@ export function LivePet({
   const eye0Ref = useRef<SVGPathElement>(null);
   const eye1Ref = useRef<SVGPathElement>(null);
 
-  const onPokeRef = useRef(onPoke);
-  onPokeRef.current = onPoke;
   const followZoneRef = useRef(followZone);
   followZoneRef.current = followZone;
   const defaultTurn = defaultLook?.[0] ?? 0;
   const defaultGazeY = defaultLook?.[1] ?? 0;
+  const focusTurn = focusLook?.[0] ?? null;
+  const focusGazeY = focusLook?.[1] ?? null;
 
   const engineRef = useRef<{
     shapeKey: PetShapeId;
@@ -170,8 +174,11 @@ export function LivePet({
     interactive: boolean;
     draggable: boolean;
     glowEnabled: boolean;
+    ambient: boolean;
     defaultTurn: number;
     defaultGazeY: number;
+    focusTurn: number | null;
+    focusGazeY: number | null;
     exprFrom: ExprSnapshot;
     exprTo: ExprSnapshot;
     exprMorph: Spring;
@@ -196,6 +203,10 @@ export function LivePet({
     idleGlanceTurn: number;
     idleGlanceY: number;
     nextGlanceAt: number;
+    nextDramaAt: number;
+    dramaCycle: number;
+    nextFocusBeatAt: number;
+    focusBeatCycle: number;
     dragging: boolean;
     dragMoved: boolean;
     dragSurprised: boolean;
@@ -204,7 +215,13 @@ export function LivePet({
     dragOffsetX: number;
     dragOffsetY: number;
     lastDragX: number;
-    lastPokeAt: number;
+    pokeStreak: number;
+    pokeResetAt: number;
+    rubLastX: number;
+    rubDir: number;
+    rubFlips: number;
+    rubWindowStart: number;
+    rubCooldownAt: number;
     actionCycle: number;
     suppressNextClick: boolean;
     blinkStart: number;
@@ -233,8 +250,11 @@ export function LivePet({
       interactive,
       draggable,
       glowEnabled,
+      ambient,
       defaultTurn,
       defaultGazeY,
+      focusTurn,
+      focusGazeY,
       exprFrom: cloneExpr(initExpr),
       exprTo: cloneExpr(initExpr),
       exprMorph: new Spring(1, 240, 21, 0.78),
@@ -259,6 +279,10 @@ export function LivePet({
       idleGlanceTurn: 0,
       idleGlanceY: 0,
       nextGlanceAt: now + 1800 + Math.random() * 2800,
+      nextDramaAt: now + 10000 + Math.random() * 8000,
+      dramaCycle: Math.floor(Math.random() * AMBIENT_DRAMAS.length),
+      nextFocusBeatAt: 0,
+      focusBeatCycle: 0,
       dragging: false,
       dragMoved: false,
       dragSurprised: false,
@@ -267,7 +291,13 @@ export function LivePet({
       dragOffsetX: 0,
       dragOffsetY: 0,
       lastDragX: 0,
-      lastPokeAt: 0,
+      pokeStreak: 0,
+      pokeResetAt: 0,
+      rubLastX: 0,
+      rubDir: 0,
+      rubFlips: 0,
+      rubWindowStart: 0,
+      rubCooldownAt: 0,
       actionCycle: 0,
       suppressNextClick: false,
       blinkStart: 0,
@@ -330,12 +360,30 @@ export function LivePet({
     e.activeAction = act;
     e.actionStart = performance.now();
     e.actionPhase = 0;
-    if (act === "bounce") e.ty.impulse(-2.2);
-    else if (act === "shake") e.rot.impulse(4.8);
-    else if (act === "peek") flashExpression("curious", 950);
-    else if (act === "pinch") flashExpression("squeeze", 680);
-    else if (act === "squish") flashExpression("squeeze", 450);
-    else if (act === "celebrate") flashExpression("happy", 1150);
+    if (act === "bounce") {
+      e.sx.impulse(2.2);
+      e.sy.impulse(-2.2);
+      e.ty.impulse(1.6);
+      flashExpression("squeeze", 170);
+    } else if (act === "shake") {
+      e.rot.impulse(5.2);
+      flashExpression("squeeze", 680);
+    } else if (act === "peek") {
+      flashExpression("curious", 1100);
+    } else if (act === "pinch") {
+      e.sx.impulse(-3.2);
+      e.sy.impulse(3.0);
+      flashExpression("squeeze", 700);
+    } else if (act === "squish") {
+      e.sx.impulse(3.6);
+      e.sy.impulse(-3.6);
+      e.ty.impulse(2.2);
+      flashExpression("squeeze", 580);
+    } else if (act === "celebrate") {
+      e.sy.impulse(-2.4);
+      e.sx.impulse(2.0);
+      flashExpression("happy", 1250);
+    }
   };
 
   const scheduleBlink = (now: number) => {
@@ -355,15 +403,31 @@ export function LivePet({
     e.interactive = interactive;
     e.draggable = draggable;
     e.glowEnabled = glowEnabled;
+    e.ambient = ambient;
     e.defaultTurn = defaultTurn;
     e.defaultGazeY = defaultGazeY;
+    const prevFocusTurn = e.focusTurn;
+    e.focusTurn = focusTurn;
+    e.focusGazeY = focusGazeY;
+    // 追看打字光标移动时给一点极轻的点头弹性，像真的在跟着读你敲下的字
+    if (
+      focusTurn !== null &&
+      prevFocusTurn !== null &&
+      Math.abs(focusTurn - prevFocusTurn) >= 1.2 &&
+      !e.dragging &&
+      !e.activeAction
+    ) {
+      e.ty.impulse(0.95);
+      e.sx.impulse(0.32);
+      e.sy.impulse(-0.32);
+    }
     if (!follow) {
       e.targetTurn = 0;
       e.targetGazeY = 0;
       e.targetTilt = 0;
       e.pointerInZone = false;
     }
-  }, [follow, interactive, draggable, glowEnabled, defaultTurn, defaultGazeY]);
+  }, [follow, interactive, draggable, glowEnabled, ambient, defaultTurn, defaultGazeY, focusTurn, focusGazeY]);
 
   useEffect(() => {
     const zone = followZone?.current;
@@ -408,13 +472,21 @@ export function LivePet({
   useEffect(() => {
     const e = engineRef.current!;
     if (e.stateKey === state) return;
+    const prevState = e.stateKey;
     if (e.flashTimer !== null) {
       window.clearTimeout(e.flashTimer);
       e.flashTimer = null;
     }
     e.stateKey = state;
     const cfg = PET_STATES[state];
-    setExpressionImmediate(cfg.expression);
+    // 从休眠惊醒：短暂闪一下圆眼惊讶 + 轻弹，再落回目标表情
+    if (prevState === "sleeping" && state !== "sleeping") {
+      e.sx.impulse(-1.8);
+      e.sy.impulse(2.1);
+      flashExpression("surprised", 420);
+    } else {
+      setExpressionImmediate(cfg.expression);
+    }
     scheduleBlink(performance.now());
     e.idleGlanceTurn = 0;
     e.idleGlanceY = 0;
@@ -468,10 +540,52 @@ export function LivePet({
       }
 
       if (!reduced && now >= e.nextBlinkAt) {
-        if (e.exprKey !== "happy" && e.exprKey !== "sleeping" && e.exprKey !== "squeeze") {
+        if (e.exprKey !== "happy" && e.exprKey !== "wink" && e.exprKey !== "sleeping" && e.exprKey !== "squeeze") {
           e.blinkStart = now;
         }
         scheduleBlink(now);
+      }
+
+      // 主球低频空闲微剧场：待机且无指针打扰时偶发 wink / 好奇 / 轻笑，随时让位于真实交互
+      if (!reduced && e.ambient && now >= e.nextDramaAt) {
+        if (e.stateKey === "idle" && !e.pointerInZone && !e.dragging && !e.activeAction && e.flashTimer === null) {
+          const expr = AMBIENT_DRAMAS[e.dramaCycle % AMBIENT_DRAMAS.length];
+          e.dramaCycle += 1;
+          flashExpression(expr, expr === "wink" ? 1350 : 1850);
+          if (expr === "curious") e.rot.impulse(3.2);
+          else if (expr === "happy") e.ty.impulse(-1.6);
+          else e.rot.impulse(-2.2);
+        }
+        e.nextDramaAt = now + 10000 + Math.random() * 8000;
+      }
+
+      // 专注看打字时的轻节拍动作：首次 1.8 秒、之后每 3.5 秒轮播轻跳好奇 / 软糯点头微笑 / 俏皮歪头眨眼
+      if (!reduced && e.focusTurn !== null && e.focusGazeY !== null && !e.dragging && !e.activeAction) {
+        if (!e.nextFocusBeatAt) e.nextFocusBeatAt = now + 1800;
+        if (now >= e.nextFocusBeatAt && e.flashTimer === null) {
+          const step = e.focusBeatCycle % 3;
+          e.focusBeatCycle += 1;
+          if (step === 0) {
+            e.ty.impulse(-3.4);
+            e.sx.impulse(-1.6);
+            e.sy.impulse(2.0);
+            e.rot.impulse(4.8);
+            flashExpression("curious", 1150);
+          } else if (step === 1) {
+            e.sx.impulse(2.5);
+            e.sy.impulse(-2.5);
+            e.ty.impulse(2.4);
+            flashExpression("happy", 1050);
+          } else {
+            e.rot.impulse(-5.2);
+            e.sx.impulse(-1.4);
+            e.sy.impulse(1.6);
+            flashExpression("wink", 1150);
+          }
+          e.nextFocusBeatAt = now + 3500;
+        }
+      } else {
+        e.nextFocusBeatAt = 0;
       }
 
       if (!reduced && now >= e.nextGlanceAt) {
@@ -502,6 +616,11 @@ export function LivePet({
       let baseTy = e.dragOffsetY + (reduced ? 0 : Math.sin(phaseNow * 0.0024) * 3.4);
       let baseSx = 1 + (reduced ? 0 : Math.sin(phaseNow * 0.0024 + 0.7) * 0.016);
       let baseSy = 1 - (reduced ? 0 : Math.sin(phaseNow * 0.0024 + 0.7) * 0.016);
+      if (e.dragging && !reduced) {
+        const stretch = clamp((Math.abs(e.dragOffsetX) - Math.abs(e.dragOffsetY)) / 280, -0.14, 0.14);
+        baseSx += stretch;
+        baseSy -= stretch;
+      }
       let baseRot = e.targetTilt;
       let extraTurn = e.pointerInZone ? 0 : biasTurn + e.idleGlanceTurn;
       let extraGazeY = e.pointerInZone ? 0 : biasY + e.idleGlanceY;
@@ -554,7 +673,7 @@ export function LivePet({
           } else if (elapsed < 0.56) {
             if (e.actionPhase < 2) {
               e.actionPhase = 2;
-              flashExpression("excited", 420);
+              flashExpression("excited", 720);
             }
             const jump = Math.sin(((elapsed - 0.17) / 0.39) * Math.PI);
             baseTy -= jump * 42;
@@ -627,13 +746,23 @@ export function LivePet({
       }
 
       const eyeCfg = PET_SHAPES[e.shapeKey].eye;
+      const useFocusLook = e.focusTurn !== null && e.focusGazeY !== null && !e.dragging && !e.activeAction;
+      if (useFocusLook) {
+        // 低头俯看输入内容：身体微微前倾下探并随视线左右歪头
+        baseTy += 9;
+        baseSx += 0.025;
+        baseSy -= 0.025;
+        baseRot = e.focusTurn! * 0.34;
+      }
       const sx = e.sx.step(baseSx, dt);
       const sy = e.sy.step(baseSy, dt);
       const tx = e.tx.step(baseTx, dt);
       const ty = e.ty.step(baseTy, dt);
       const rot = e.rot.step(baseRot, dt);
-      const turn = e.turn.step(clamp(e.targetTurn + extraTurn, -26, 26), dt);
-      const gazeY = e.gazeY.step(clamp(e.targetGazeY + extraGazeY, -14, 14), dt);
+      const desiredTurn = useFocusLook ? e.focusTurn! : e.targetTurn + extraTurn;
+      const desiredGazeY = useFocusLook ? e.focusGazeY! : e.targetGazeY + extraGazeY;
+      const turn = e.turn.step(clamp(desiredTurn, -36, 36), dt);
+      const gazeY = e.gazeY.step(clamp(desiredGazeY, -24, 38), dt);
       const eyeScale = e.eyeScale.step(eyeCfg.scale, dt);
       const eyeShiftY = e.eyeShiftY.step(eyeCfg.shiftY, dt);
       const shapeMoving = Math.abs(e.shapeMorph.x - 1) > 0.0005 || Math.abs(e.shapeMorph.v) > 0.0005;
@@ -685,8 +814,10 @@ export function LivePet({
         const perspective = clamp(depth / Math.max(Math.cos(baseLon), 0.1), 0.14, 1.32);
         const ex = 114.5 + sphereR * Math.sin(lon);
         const ey = 114.5 + (offsetY + gazeY) * eyeScale + eyeShiftY;
+        // 俯仰透视：低头/抬头幅度大时按球面纬度轻微压扁眼高，立体感更自然
+        const pitchCos = Math.cos(Math.asin(clamp(gazeY / sphereR, -0.55, 0.55)));
         const sxEye = perspective * eyeScale;
-        const syEye = bs * eyeScale;
+        const syEye = bs * pitchCos * eyeScale;
         const nextD = i === 0 ? leftD : rightD;
         if (nextD !== null) el.setAttribute("d", nextD);
         el.setAttribute("transform", `translate(${ex.toFixed(2)} ${ey.toFixed(2)}) scale(${sxEye.toFixed(3)} ${syEye.toFixed(3)})`);
@@ -769,7 +900,32 @@ export function LivePet({
         e.targetGazeY = ny * 12;
         e.targetTilt = nx * 4.8;
         e.pointerInZone = true;
-        e.lastPointerAt = performance.now();
+        const now = performance.now();
+        e.lastPointerAt = now;
+        // 首页/关于页大球「撸一撸」轻抚手势：在球身上左右快速来回轻扫触发眯眼享受
+        if (!reduced && e.ambient && e.interactive && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+          const stepX = clientX - e.rubLastX;
+          if (Math.abs(stepX) >= 8) {
+            const dir = stepX > 0 ? 1 : -1;
+            if (now - e.rubWindowStart > 900) {
+              e.rubWindowStart = now;
+              e.rubFlips = 0;
+              e.rubDir = dir;
+            } else if (e.rubDir && dir !== e.rubDir) {
+              e.rubFlips += 1;
+              e.rubDir = dir;
+              if (e.rubFlips >= 3 && now >= e.rubCooldownAt) {
+                e.rubFlips = 0;
+                e.rubCooldownAt = now + 2400;
+                e.sx.impulse(2.0);
+                e.sy.impulse(-1.4);
+                e.rot.impulse(dir * 2.8);
+                flashExpression("happy", 1300);
+              }
+            }
+            e.rubLastX = clientX;
+          }
+        }
       } else if (e.pointerInZone) {
         e.pointerInZone = false;
         e.targetTurn = 0;
@@ -812,28 +968,33 @@ export function LivePet({
 
       if (!wasDrag) {
         const now = performance.now();
-        // 短时间连戳（双击）：轮播 GrokBot 6 种果冻动作！
-        if (now - e.lastPokeAt < 380) {
-          e.lastPokeAt = 0;
-          const act = PLAYFUL_ACTIONS[e.actionCycle % PLAYFUL_ACTIONS.length];
+        // 统一连击序列（无双击时间窗冲突）：每次点击自然递进表情与果冻动作
+        e.pokeStreak = now < e.pokeResetAt ? e.pokeStreak + 1 : 1;
+        e.pokeResetAt = now + 2400;
+        if (e.pokeStreak === 1) {
+          triggerAction("squish");
+        } else if (e.pokeStreak === 2) {
+          triggerAction("bounce");
+        } else if (e.pokeStreak === 3) {
+          triggerAction("peek");
+          flashExpression(e.actionCycle % 2 === 0 ? "wink" : "shy", 1150);
           e.actionCycle++;
-          triggerAction(act);
+        } else if (e.pokeStreak === 4) {
+          triggerAction("celebrate");
         } else {
-          e.lastPokeAt = now;
-          e.sx.impulse(3.5);
-          e.sy.impulse(-3.5);
-          e.ty.impulse(1.9);
-          flashExpression("squeeze", 380);
+          e.pokeStreak = 0;
+          triggerAction("shake");
+          flashExpression("surprised", 950);
         }
-        onPokeRef.current?.();
       } else {
-        // 拖拽松手后拦截紧随的 click，避免误触外层按钮
+        // 拖拽松手后拦截紧随的 click，避免误触外层按钮，并衔接柔和余韵表情
         e.suppressNextClick = true;
         window.setTimeout(() => { e.suppressNextClick = false; }, 120);
-        e.sx.impulse(2.5);
-        e.sy.impulse(-2.3);
+        e.sx.impulse(3.2);
+        e.sy.impulse(-3.0);
         if (wasSurprised) {
-          setExpressionImmediate(PET_STATES[e.stateKey].expression);
+          flashExpression(e.actionCycle % 2 === 0 ? "shy" : "wink", 750);
+          e.actionCycle++;
         }
       }
     };

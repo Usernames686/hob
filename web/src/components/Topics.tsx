@@ -53,7 +53,7 @@ export function TopicRow({ g, sel }: { g: GroupSummary; sel?: boolean }) {
       className={`list-row home-row topic-row${sel ? " sel" : ""}${g.closedAt ? " closed" : ""}`}
       onClick={() => void selectGroup(g.id)}
     >
-      {face ? <Avatar sprite={face.sprite} prop={face.prop} size={36} /> : <span className="topic-hash" aria-hidden="true"><Icon name="hash" size={18} /></span>}
+      {face ? <Avatar sprite={face.sprite} size={36} /> : <span className="topic-hash" aria-hidden="true"><Icon name="hash" size={18} /></span>}
       <div className="main">
         <div className="l1">
           <span className="nm">{g.name}</span>
@@ -179,7 +179,7 @@ export function PlaceJobs({ ids, where = true }: { ids: string[]; where?: boolea
         const parts = [a?.name ?? job.assistantId, where ? (place?.parentId ? t("「{name}」", { name: place.name }) : t("综合")) : "", `${JOB_STATUS[job.status].text} ${fmtElapsed(job.startedAt ?? job.createdAt)}`].filter(Boolean);
         return (
           <button key={job.id} className="gm-row" onClick={() => openJob(job.id)}>
-            {a ? <Avatar sprite={a.sprite} prop={a.prop} size={30} /> : null}
+            {a ? <Avatar sprite={a.sprite} size={30} /> : null}
             <span>
               <strong>{job.title}</strong>
               <small>{parts.join(" · ")}</small>

@@ -41,10 +41,16 @@ describe("首页偏好", () => {
   it("筛选和排序模式写入本机存储", () => {
     store.setHomeFilter("jobs");
     store.setHomeOrder("custom");
+    store.setComposerModelPicker(true);
     expect(storage.get("hob.home.filter")).toBe("jobs");
     expect(storage.get("hob.home.order")).toBe("custom");
+    expect(storage.get("hob.composer.model")).toBe("1");
     expect(store.getState().homeFilter).toBe("jobs");
     expect(store.getState().homeOrder).toBe("custom");
+    expect(store.getState().composerModelPicker).toBe(true);
+    store.setComposerModelPicker(false);
+    expect(storage.get("hob.composer.model")).toBe("0");
+    expect(store.getState().composerModelPicker).toBe(false);
   });
 });
 describe("混排置顶", () => {

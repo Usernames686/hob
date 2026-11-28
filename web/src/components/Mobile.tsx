@@ -20,11 +20,12 @@ const pickList = (s: State) => ({
   query: s.query,
   search: s.search,
   update: s.update,
+  updateMuted: s.updateMuted,
 });
 
 export const MobileList = memo(function MobileList() {
   const s = useAppSelect(pickList, shallow);
-  const updateVersion = availableVersion(s.update);
+  const updateVersion = availableVersion(s.update, s.updateMuted);
   const pins = pinList(conversations(s.assistants, s.groups, s.groupPrefs), s.query);
   const drag = usePinDrag(pins, s.query.trim().length > 0, (row) => row.kind === "group" || !row.a.primary);
   const layout = pinLayout(pins.length);

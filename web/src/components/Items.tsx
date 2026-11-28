@@ -353,7 +353,7 @@ function JobCard({ job: current, round, fresh, itemId }: { job: Job; round?: num
         }}
       >
         <div className="tt">
-          {owner ? <span className="jav"><Avatar sprite={owner.sprite} prop={owner.prop} size={40} /></span> : null}
+          {owner ? <span className="jav"><Avatar sprite={owner.sprite} size={40} /></span> : null}
           <span className="jt">{job.routineId ? <Icon name="clock" size={14} /> : null}{job.title}</span>
           <span className="stline">
             <StatusTag meta={jobStatusMeta(job, s.jobs)} card animated swapped={swapped}>
@@ -420,13 +420,12 @@ function DraftCard({ draft }: { draft: Draft }) {
   const created = draft.status === "created" && draft.createdAssistantId;
   // 建好以后：头像跟着新助手走（可能是自画的道具），细节收起来，留职责和「查看」
   const made = created ? s.assistants.find((a) => a.id === draft.createdAssistantId) : undefined;
-  const prop = made?.prop ?? draft.prop;
   // 建出来的助手归档了：点过去也没这人了，就说明一下
   const archived = Boolean(created) && !made;
   return (
     <div className="draft">
         <div className="top">
-          <Avatar sprite={made?.sprite ?? draft.sprite} prop={prop} size={46} />
+          <Avatar sprite={made?.sprite ?? draft.sprite} size={46} />
           <div>
             <div className="dn">{draft.name}</div>
             <div className="ds">{draft.status === "created" ? t("新助手 · 已创建") : t("新助手 · 草稿")}</div>
@@ -500,7 +499,7 @@ function DelegationCard({ delegation, fresh }: { delegation: Delegation; fresh: 
         onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void jumpToDelegation(delegation.to, delegation.id, true); } }}
       >
         <div className="tt">
-          {target ? <span className="jav"><Avatar sprite={target.sprite} prop={target.prop} size={40} /></span> : null}
+          {target ? <span className="jav"><Avatar sprite={target.sprite} size={40} /></span> : null}
           <span className="jt">{t("交给「{name}」", { name })}</span>
           <span key={delegation.status} className={changed ? "status-fade" : undefined}><StatusTag meta={DELEGATION_STATUS[delegation.status]} card /></span>
         </div>
@@ -784,7 +783,7 @@ export function TopicCard({ topicId, fresh, itemId }: { topicId: string; fresh: 
     <div className={`hov${fresh ? " enter" : ""}`} data-item-id={itemId}>
       <div className="b topiccard" role="button" tabIndex={0} onClick={open} onKeyDown={(event) => { if (event.key === "Enter") open(); }}>
         <div className="tt">
-          {face ? <span className="jav"><Avatar sprite={face.sprite} prop={face.prop} size={40} /></span> : null}
+          {face ? <span className="jav"><Avatar sprite={face.sprite} size={40} /></span> : null}
           <span className="jt">{g.name}</span>
           {g.closedAt ? <StatusTag meta={{ text: t("已关闭"), icon: "archive", color: "", spin: false }} card /> : <button className="topic-enter" onClick={(event) => { event.stopPropagation(); open(); }}>{t("进入话题")} <Icon name="chev" size={13} /></button>}
         </div>
@@ -902,7 +901,7 @@ function ItemView({
         ) : null}
         {hasBubble ? (
         <div className="u" ref={bubble} style={swipeStyle}>
-          {item.from ? <button className="forward-label" onClick={() => void (item.from!.delegationId.startsWith("dg-") ? jumpToDelegation(item.from!.assistantId, item.from!.delegationId, false) : jumpToHandback(item.from!.assistantId, item.from!.delegationId, false))}>{(() => { const sender = s.assistants.find((a) => a.id === item.from!.assistantId); return sender ? <Avatar sprite={sender.sprite} prop={sender.prop} size={16} /> : null; })()}{t("转自 {name}", { name: item.from.name })}</button> : null}
+          {item.from ? <button className="forward-label" onClick={() => void (item.from!.delegationId.startsWith("dg-") ? jumpToDelegation(item.from!.assistantId, item.from!.delegationId, false) : jumpToHandback(item.from!.assistantId, item.from!.delegationId, false))}>{(() => { const sender = s.assistants.find((a) => a.id === item.from!.assistantId); return sender ? <Avatar sprite={sender.sprite} size={16} /> : null; })()}{t("转自 {name}", { name: item.from.name })}</button> : null}
           {item.quote ? <button className={`quote${quoteWho?.(item.quote.itemId) ? " named" : ""}`} onClick={(event) => jumpToQuote(event, item.quote!.itemId, s.gsel ? { kind: "group", id: s.gsel } : s.sel ? { kind: "assistant", id: s.sel } : undefined)}>{quoteWho?.(item.quote.itemId) ? t("{name}：", { name: quoteWho(item.quote.itemId)! }) : ""}{item.quote.text}</button> : null}
           {/* 其他附件是气泡里的一行文件卡 */}
           {item.text ? <span className={`u-text${item.from ? " u-brief" : ""}`}>{item.from ? <Brief text={item.text} /> : item.text}</span> : null}
@@ -1242,7 +1241,7 @@ function Reactions({ itemId, reactions, group }: { itemId: string; reactions: { 
     const title = r.emoji === "👀" ? t("{name} 已查看（未补充发言）", { name: a?.name ?? r.by }) : a?.name;
     return <span className="reaction" key={r.by} title={title}>
       <span className={`reaction-emoji${pop.has(keys[i]) ? " pop" : ""}`} key={r.emoji}>{r.emoji}</span>
-      {group && a ? <Avatar sprite={a.sprite} prop={a.prop} size={16} /> : null}
+      {group && a ? <Avatar sprite={a.sprite} size={16} /> : null}
     </span>;
   })}</div>;
 }
@@ -1329,7 +1328,7 @@ export function GroupItemList({ g, items: all, onRewind, onSaveDoc }: { g: Group
       <Fragment key={item.id}>
         {divider}
         <div className="gblock">
-          <div className="gblock-av">{speaker ? <Avatar sprite={speaker.sprite} prop={speaker.prop} size={30} /> : null}</div>
+          <div className="gblock-av">{speaker ? <Avatar sprite={speaker.sprite} size={30} /> : null}</div>
           <div className="gblock-main">
             <div className="gblock-name">
               {speaker?.name ?? item.speaker}

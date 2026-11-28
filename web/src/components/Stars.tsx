@@ -35,7 +35,7 @@ function StarRow({ star }: { star: StarredMessage }) {
   const assistant = s.assistants.find((a) => a.id === (star.speaker === "user" ? group?.ownerId ?? star.conversation.id : star.speaker));
   const name = group?.name ?? s.assistants.find((a) => a.id === star.conversation.id)?.name ?? star.conversation.id;
   return <div className="star-row">
-    <div className="star-meta">{assistant ? <Avatar sprite={assistant.sprite} prop={assistant.prop} size={28} /> : <Icon name="user" size={22} />}<strong>{name}</strong><span>{fmtWhen(star.at)}</span></div>
+    <div className="star-meta">{assistant ? <Avatar sprite={assistant.sprite} size={28} /> : <Icon name="user" size={22} />}<strong>{name}</strong><span>{fmtWhen(star.at)}</span></div>
     <div className={`star-body md${open ? " open" : ""}`} ref={body}><Markdown text={star.text} /></div>
     {long ? <Disclosure label={open ? t("收起") : t("展开")} open={open} onToggle={() => setOpen(!open)} /> : null}
     <div className="star-actions">

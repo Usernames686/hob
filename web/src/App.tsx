@@ -16,11 +16,12 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { GroupSidebar, MobileTopics } from "./components/Topics.tsx";
 import { Home } from "./components/Home.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
+import { conversations, pinList } from "./home.ts";
 import { groupSidebarFor } from "./topics.ts";
 import { useLeave } from "./motion.ts";
 import { applyUpdate } from "./pwa.ts";
 import { gonePages, layerList, pageKey, panelDesk, type GonePage } from "./panel-stack.ts";
-import { backPanel, answer, clearNotice, closeLoginDesktop, closePanelPages, collapsePanel, leaveChat, leaveTopicList, loadDesktopWidth, saveDesktopWidth, start, tick, useApp, type PanelPage } from "./store.ts";
+import { backPanel, answer, clearNotice, closeLoginDesktop, closePanelPages, collapsePanel, goHome, leaveChat, leaveTopicList, loadDesktopWidth, loadPanelWidth, loadSideWidth, openAssistant, saveDesktopWidth, savePanelWidth, saveSideWidth, selectGroup, start, tick, togglePanel, toggleSideCollapsed, useApp, type PanelPage } from "./store.ts";
 import { isNarrow, updateStatusColor } from "./theme.ts";
 import { useDesktopScreens } from "./desktop-screens.ts";
 import { Avatar } from "./sprites.tsx";
@@ -137,9 +138,54 @@ export function App() {
     return () => clearTimeout(timer);
   }, [s.notice]);
 
-  // 云桌面展开时右栏的宽度可以拖：往左拖变宽，最宽到样式里算出的上限（对话区留 420px、画面放得下高度）
+  // 桌面全局快捷键：⌘\ 切左栏、⌘. 切右栏、⇧⌘H 回首页、Alt+1~9 切置顶对话
+  useEffect(() => {
+    if (s.phase !== "ready" || narrow) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (mod && !event.altKey && !event.shiftKey && event.key === "\\") {
+        if (s.page === "main" && (s.sel || s.gsel)) {
+          event.preventDefault();
+          toggleSideCollapsed();
+        }
+        return;
+      }
+      if (mod && !event.altKey && !event.shiftKey && event.key === ".") {
+        if (s.page === "main" && (s.sel || s.gsel)) {
+          event.preventDefault();
+          togglePanel();
+        }
+        return;
+      }
+      if (mod && event.shiftKey && !event.altKey && key === "h") {
+        event.preventDefault();
+        goHome();
+        return;
+      }
+      if (event.altKey && !mod && !event.shiftKey && /^[1-9]$/.test(event.key)) {
+        const target = event.target as HTMLElement | null;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+        const pins = pinList(conversations(s.assistants, s.groups, s.groupPrefs), "");
+        const picked = pins[Number(event.key) - 1];
+        if (!picked) return;
+        event.preventDefault();
+        if (picked.kind === "assistant") void openAssistant(picked.id);
+        else void selectGroup(picked.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [s.phase, s.page, s.sel, s.gsel, s.assistants, s.groups, s.groupPrefs, narrow]);
+
+  // 桌面左右栏与云桌面右栏都支持拖拽调宽，双击拖拽线恢复默认
+  const sidestack = useRef<HTMLDivElement>(null);
   const panelwrap = useRef<HTMLDivElement>(null);
   const [desktopWidth, setDesktopWidth] = useState(loadDesktopWidth);
+  const [sideWidth, setSideWidth] = useState(loadSideWidth);
+  const [panelWidth, setPanelWidth] = useState(loadPanelWidth);
   // 手机左边缘跟手右滑返回（必须位于所有条件 return 之前，遵守 React Hooks 规则）
   const [edgeDrag, setEdgeDrag] = useState<{ target: "chat" | "topics"; dx: number } | null>(null);
   const edgeRef = useRef<{ target: "chat" | "topics"; startX: number; startY: number; dx: number; active: boolean; locked: "h" | "v" | null } | null>(null);
@@ -196,6 +242,59 @@ export function App() {
       const width = wrap.getBoundingClientRect().width;
       setDesktopWidth(width);
       saveDesktopWidth(width);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  };
+  const startSideResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const stack = sidestack.current;
+    const appEl = stack?.parentElement;
+    if (!stack || !appEl || event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = stack.getBoundingClientRect().width;
+    stack.classList.add("resizing");
+    const move = (e: PointerEvent) => {
+      const next = Math.round(Math.min(380, Math.max(248, startWidth + e.clientX - startX)));
+      appEl.style.setProperty("--side-width", `${next}px`);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      stack.classList.remove("resizing");
+      const width = Math.round(Math.min(380, Math.max(248, stack.getBoundingClientRect().width)));
+      setSideWidth(width);
+      saveSideWidth(width);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  };
+  const startPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const wrap = panelwrap.current;
+    if (!wrap || event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = wrap.getBoundingClientRect().width;
+    wrap.classList.add("resizing");
+    const move = (e: PointerEvent) => {
+      const next = Math.round(Math.min(460, Math.max(290, startWidth + startX - e.clientX)));
+      wrap.style.setProperty("--panel-w", `${next}px`);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      wrap.classList.remove("resizing");
+      const width = Math.round(Math.min(460, Math.max(290, wrap.getBoundingClientRect().width)));
+      setPanelWidth(width);
+      savePanelWidth(width);
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", up);
@@ -327,9 +426,20 @@ export function App() {
     );
   }
 
+  const panelStyle: React.CSSProperties | undefined =
+    desktopWidth || panelWidth
+      ? {
+          ...(desktopWidth ? { ["--desk-w" as string]: `${desktopWidth}px` } : {}),
+          ...(panelWidth ? { ["--panel-w" as string]: `${panelWidth}px` } : {}),
+        }
+      : undefined;
+
   return (
-    <div className={`app${fullPage ? " preview-full" : ""}${sideHidden ? " side-collapsed" : ""}`}>
-      <div className="sidestack" inert={sideHidden}>
+    <div
+      className={`app${fullPage ? " preview-full" : ""}${sideHidden ? " side-collapsed" : ""}`}
+      style={!sideHidden && sideWidth ? { ["--side-width" as string]: `${sideWidth}px` } : undefined}
+    >
+      <div ref={sidestack} className="sidestack" inert={sideHidden}>
         <div className={`sidepane home${sideGroup ? " away" : ""}`} aria-hidden={sideGroup ? true : undefined} inert={Boolean(sideGroup)}>
           <Sidebar />
         </div>
@@ -337,6 +447,19 @@ export function App() {
           <div className={`sidepane grp${groupSide.leaving ? " out" : ""}${sideStill.current ? " still" : ""}`}>
             <GroupSidebar groupId={sideGroupId.current} />
           </div>
+        ) : null}
+        {!sideHidden ? (
+          <div
+            className="side-resize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("拖动调整左栏宽度")}
+            onPointerDown={startSideResize}
+            onDoubleClick={() => {
+              setSideWidth(undefined);
+              saveSideWidth(null);
+            }}
+          />
         ) : null}
       </div>
       {home ? <Home /> : <Chat />}
@@ -351,8 +474,20 @@ export function App() {
         />
       ) : null}
       {/* 右栏宽度跟根页走（收起、云桌面展开），宽页（任务、文件、文档）打开时变宽、把对话区挤窄；上面的页一层层盖在右栏里 */}
-      <div ref={panelwrap} className={`panelwrap${fullPage ? " full" : widePage ? " wide page" : home || s.collapsed ? " off" : desktopFocus ? " wide focus" : s.nowWide ? " wide" : ""}`} style={desktopWidth ? { ["--desk-w" as string]: `${desktopWidth}px` } : undefined}>
-        {desktopFocus && !widePage && !fullPage && !home && !s.collapsed ? <div className="panel-resize" role="separator" aria-orientation="vertical" aria-label={t("拖动调整云桌面宽度")} onPointerDown={startResize} /> : null}
+      <div ref={panelwrap} className={`panelwrap${fullPage ? " full" : widePage ? " wide page" : home || s.collapsed ? " off" : desktopFocus ? " wide focus" : s.nowWide ? " wide" : ""}`} style={panelStyle}>
+        {!widePage && !fullPage && !home && !s.collapsed ? (
+          <div
+            className="panel-resize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={desktopFocus ? t("拖动调整云桌面宽度") : t("拖动调整右栏宽度")}
+            onPointerDown={desktopFocus ? startResize : startPanelResize}
+            onDoubleClick={desktopFocus ? undefined : () => {
+              setPanelWidth(undefined);
+              savePanelWidth(null);
+            }}
+          />
+        ) : null}
         {/* 首页右栏是收起的：不渲染根页，免得回首页那一刻在滑出去的面板里重画一遍主助手的资料 */}
         {home ? null : <Panel page={null} />}
         {layers.map(({ page, leaving }) => (

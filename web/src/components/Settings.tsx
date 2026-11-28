@@ -2,7 +2,7 @@
 import { Select } from "./Select.tsx";
 import { DelayedText, Empty } from "./Empty.tsx";
 import { SaveMessage, useSaveMessage } from "./SaveMessage.tsx";
-import { Fragment, Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMenu } from "./use-menu.ts";
 import type {
@@ -11,7 +11,6 @@ import type {
   ClaudeCodeView,
   DesktopView,
   EmbeddingSettings,
-  ImageKeyView,
   ImageSettings,
   LoreTestResult,
   MemoryConfig,
@@ -111,6 +110,8 @@ import {
   setLocale,
   setPalette,
   setSection,
+  setUpdateMuted,
+  setComposerModelPicker,
   openSub,
   closeSub,
   testImage,
@@ -346,7 +347,7 @@ function sectionIcon(id: SettingsSection): IconName {
 function sectionKeywords(id: SettingsSection): string {
   switch (id) {
     case "general":
-      return `${t("主题")} ${t("配色")} ${t("界面语言")} ${t("时区")} ${t("网络代理")} ${t("登录密码")} ${t("个人信息")} theme palette color language timezone proxy password`;
+      return `${t("主题")} ${t("配色")} ${t("界面语言")} ${t("时区")} ${t("网络代理")} ${t("登录密码")} ${t("个人信息")} ${t("对话框显示模型选择")} theme palette color language timezone proxy password composer model`;
     case "rules":
       return `${t("全局规则")} ${t("执行前确认")} ${t("一律照做")} rules policy`;
     case "push":
@@ -441,7 +442,7 @@ export function SettingsPage({ narrow, leaving }: { narrow: boolean; leaving: bo
         .filter((group) => group.items.length > 0)
     : groups;
   const current = s.section ?? (narrow ? null : "general");
-  const updateVersion = availableVersion(s.update);
+  const updateVersion = availableVersion(s.update, s.updateMuted);
   // 换分栏、进出子页都从顶上看起
   const main = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -788,6 +789,8 @@ function GeneralSection() {
   const noProxyValue = s.settings.settings.general.noProxy;
   const [proxyInput, setProxyInput] = useState(proxyValue);
   const [proxyFocused, setProxyFocused] = useState(false);
+  const [proxyOpen, setProxyOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
   useEffect(() => setProxyInput(proxyValue), [proxyValue]);
   const saveProxy = async () => {
     if (proxyInput === proxyValue) return true;
@@ -833,26 +836,36 @@ function GeneralSection() {
           <TimezoneField value={s.settings.settings.general.timezone} onSave={(timezone) => feedback.save({ general: { timezone } })} />
           <div className="note">{t("助手的「现在时间」和定时任务都按这个时区算。")}</div>
 
-          <div className="lbl sub">{t("网络代理")}</div>
-          <div className="field">
-            <input
-              value={proxyFocused ? proxyInput : maskProxy(proxyInput)}
-              placeholder={t("如 http://用户名:密码@127.0.0.1:7890")}
-              disabled={feedback.busy}
-              onFocus={() => setProxyFocused(true)}
-              onChange={(e) => setProxyInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-              }}
-              onBlur={() => { setProxyFocused(false); void saveProxy().then((ok) => { if (!ok) setProxyInput(proxyValue); }); }}
-            />
-          </div>
-          <div className="lbl sub">{t("不走代理的地址")}</div>
-          <AutoField value={noProxyValue} placeholder={t("如 localhost,127.0.0.1,::1")} onSave={(noProxy) => feedback.save({ general: { noProxy } })} />
-          <div className="note">{t("填了以后，Hob 连接模型、插件、网页搜索，以及助手运行的命令，都通过这个代理。")}</div>
+          <div className="settings-divider" />
+          <Disclosure
+            className="settings-fold"
+            label={t("网络代理")}
+            count={proxyValue ? t("已配置") : t("未配置")}
+            open={proxyOpen}
+            onToggle={() => setProxyOpen((v) => !v)}
+          >
+            <div className="settings-fold-body">
+              <div className="field">
+                <input
+                  value={proxyFocused ? proxyInput : maskProxy(proxyInput)}
+                  placeholder={t("如 http://用户名:密码@127.0.0.1:7890")}
+                  disabled={feedback.busy}
+                  onFocus={() => setProxyFocused(true)}
+                  onChange={(e) => setProxyInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  onBlur={() => { setProxyFocused(false); void saveProxy().then((ok) => { if (!ok) setProxyInput(proxyValue); }); }}
+                />
+              </div>
+              <div className="lbl sub">{t("不走代理的地址")}</div>
+              <AutoField value={noProxyValue} placeholder={t("如 localhost,127.0.0.1,::1")} onSave={(noProxy) => feedback.save({ general: { noProxy } })} />
+              <div className="note">{t("填了以后，Hob 连接模型、插件、网页搜索，以及助手运行的命令，都通过这个代理。")}</div>
+            </div>
+          </Disclosure>
         </div>
       </Group>
 
@@ -874,6 +887,21 @@ function GeneralSection() {
           </div>
 
           <div className="settings-divider" />
+          <div className="ctl settings-toggle-row">
+            <div className="settings-toggle-copy">
+              <div className="settings-toggle-title">{t("对话框显示模型选择")}</div>
+              <div className="note">{t("开启后在聊天输入框底部直接显示模型切换按钮；关闭时仍可在「+」菜单中切换。")}</div>
+            </div>
+            <button
+              type="button"
+              className={`tog${s.composerModelPicker ? "" : " off"}`}
+              aria-label={t("对话框显示模型选择")}
+              aria-pressed={s.composerModelPicker}
+              onClick={() => setComposerModelPicker(!s.composerModelPicker)}
+            />
+          </div>
+
+          <div className="settings-divider" />
           <div className="lbl">{t("个人信息")}</div>
           <div className="lbl sub">{t("称呼")}</div>
           <AutoField placeholder={t("如「王先生」")} value={about.name} onSave={(name) => feedback.save({ general: { aboutYou: { name: name.trim() } } })} />
@@ -887,9 +915,18 @@ function GeneralSection() {
 
       <Group>
         <div className="lbl">{t("账号安全")}</div>
-        <div className="formcard">
-          <PasswordSection onDone={setPwNotice} />
-          {pwNotice ? <div className={pwNotice.ok ? "okline" : "badline"} role="status" style={{ marginTop: 8 }}>{pwNotice.text}</div> : null}
+        <div className="group-card settings-card">
+          <Disclosure
+            className="settings-fold-card"
+            label={t("登录密码")}
+            open={pwOpen}
+            onToggle={() => setPwOpen((v) => !v)}
+          >
+            <div className="settings-fold-body">
+              <PasswordSection onDone={setPwNotice} />
+              {pwNotice ? <div className={pwNotice.ok ? "okline" : "badline"} role="status" style={{ marginTop: 8 }}>{pwNotice.text}</div> : null}
+            </div>
+          </Disclosure>
         </div>
       </Group>
     </>
@@ -1050,7 +1087,6 @@ function PasswordSection({ onDone }: { onDone: (notice: { ok: boolean; text: str
 
   return (
     <>
-      <div className="lbl">{t("登录密码")}</div>
       <div className="pw-fields">
         <SecretInput placeholder={t("旧密码")} value={old} onChange={setOld} disabled={busy} autoComplete="current-password" />
         <SecretInput placeholder={t("新密码")} value={next} onChange={setNext} disabled={busy} autoComplete="new-password" />
@@ -1177,6 +1213,9 @@ function importKeyLabel(key: ProviderImportItem["key"]): string {
   return t("无 Key");
 }
 
+type ProviderConn = { status: "connected" | "failed" | "testing"; ms?: number };
+let cachedProviderConns: Record<string, ProviderConn> = {};
+
 /** 设置 → 服务商：三层。服务商列表 → 服务商详情 / 添加服务商 / 从本机导入。 */
 function ProvidersSection() {
   const s = useApp();
@@ -1184,8 +1223,17 @@ function ProvidersSection() {
   const [view, setView] = useState<ProvidersView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<Record<string, "connected" | "failed">>({});
-  const connectionSaved = (id: string, status: "connected" | "failed") => setConnectionStatus((current) => ({ ...current, [id]: status }));
+  const [connectionStatus, setConnectionStatus] = useState<Record<string, ProviderConn>>(() => cachedProviderConns);
+  const [testingAll, setTestingAll] = useState(false);
+  const setConn = (updater: (current: Record<string, ProviderConn>) => Record<string, ProviderConn>) => {
+    setConnectionStatus((current) => {
+      const next = updater(current);
+      cachedProviderConns = next;
+      return next;
+    });
+  };
+  const connectionSaved = (id: string, status: "connected" | "failed", ms?: number) =>
+    setConn((current) => ({ ...current, [id]: { status, ...(ms !== undefined ? { ms } : {}) } }));
 
   useEffect(() => {
     void loadProviders().then((result) => (result.ok ? setView(result.view) : setLoadError(result.error)));
@@ -1196,7 +1244,7 @@ function ProvidersSection() {
   }, [sub]);
   useEffect(() => {
     if (!view) return;
-    setConnectionStatus((current) => Object.fromEntries(Object.entries(current).filter(([id]) => view.providers.some((provider) => provider.id === id))));
+    setConn((current) => Object.fromEntries(Object.entries(current).filter(([id]) => view.providers.some((provider) => provider.id === id))));
   }, [view]);
 
   if (loadError) return <div className="note">{loadError}</div>;
@@ -1204,10 +1252,34 @@ function ProvidersSection() {
 
   /** 改完回到列表，并给一行提示。 */
   const done = (next: ProvidersView, message: string) => {
-    if (message.startsWith(t("已导入"))) setConnectionStatus({});
+    if (message.startsWith(t("已导入"))) setConn(() => ({}));
     setView(next);
     setNotice(message);
     closeSub();
+  };
+
+  /** 一键检测所有已填 Key 的服务商连通性与延迟。 */
+  const testAll = async () => {
+    const targets = view.providers.filter((provider) => provider.keyConfigured);
+    if (testingAll || !targets.length) return;
+    setTestingAll(true);
+    setConn((current) => {
+      const next = { ...current };
+      for (const provider of targets) next[provider.id] = { status: "testing" };
+      return next;
+    });
+    await Promise.all(
+      targets.map(async (provider) => {
+        const started = performance.now();
+        const body = provider.kind === "builtin"
+          ? { kind: "builtin" as const, id: provider.id }
+          : { kind: "custom" as const, id: provider.id, api: provider.api, baseUrl: provider.baseUrl };
+        const error = await testProviderConnection(body);
+        const ms = Math.max(1, Math.round(performance.now() - started));
+        connectionSaved(provider.id, error ? "failed" : "connected", error ? undefined : ms);
+      }),
+    );
+    setTestingAll(false);
   };
 
   /** 改了一个模型的思考档：整份设置换新的（新 revision），这个模型的思考档就地更新。 */
@@ -1228,13 +1300,22 @@ function ProvidersSection() {
     );
   };
 
+  const detailConn = sub?.kind === "provider" ? connectionStatus[sub.id]?.status : undefined;
   if (sub?.kind === "provider")
     return (
-      <ProviderDetail id={sub.id} view={view} onView={setView} onSaved={done} onThinking={thinkingSaved} onConnection={connectionSaved} connectionStatus={connectionStatus[sub.id]} />
+      <ProviderDetail
+        id={sub.id}
+        view={view}
+        onView={setView}
+        onSaved={done}
+        onThinking={thinkingSaved}
+        onConnection={connectionSaved}
+        connectionStatus={detailConn === "connected" || detailConn === "failed" ? detailConn : undefined}
+      />
     );
   if (sub?.kind === "addProvider") return <AddProvider view={view} onSaved={done} onConnection={connectionSaved} />;
   if (sub?.kind === "importProviders") return <ImportProviders onSaved={done} />;
-  return <ProvidersHome view={view} notice={notice} connectionStatus={connectionStatus} />;
+  return <ProvidersHome view={view} notice={notice} connectionStatus={connectionStatus} testingAll={testingAll} onTestAll={() => void testAll()} />;
 }
 
 function PluginProviderIcon({ provider, models, size = 32 }: { provider: PluginProviderSummary; models?: readonly { id: string; name?: string }[]; size?: number }) {
@@ -1268,10 +1349,23 @@ function pluginProviderStatus(provider: PluginProviderSummary): { cls: string; t
 }
 
 /** 服务商页：已配置的服务商（整行点进详情）、来自插件的服务商（点进插件页）、添加服务商、从本机导入。 */
-function ProvidersHome({ view, notice, connectionStatus }: { view: ProvidersView; notice: string | null; connectionStatus: Record<string, "connected" | "failed"> }) {
+function ProvidersHome({
+  view,
+  notice,
+  connectionStatus,
+  testingAll,
+  onTestAll,
+}: {
+  view: ProvidersView;
+  notice: string | null;
+  connectionStatus: Record<string, ProviderConn>;
+  testingAll: boolean;
+  onTestAll: () => void;
+}) {
   const builtinName = (id: string) => view.builtin.find((item) => item.id === id)?.name ?? id;
   const label = (provider: ProviderView) => (provider.kind === "builtin" ? builtinName(provider.id) : provider.name);
   const pluginProviders = view.pluginProviders ?? [];
+  const testableCount = view.providers.filter((provider) => provider.keyConfigured).length;
 
   return (
     <>
@@ -1282,25 +1376,47 @@ function ProvidersHome({ view, notice, connectionStatus }: { view: ProvidersView
 
       <ClaudeProviderCard />
       <Group>
-        <div className="lbl">{t("已配置的服务商")}</div>
-        <div className="group-card settings-card providers-list">
-          {view.providers.map((provider) => (
-            <button
-              className="list-row setting-row"
-              key={provider.id}
-              onClick={() => openSub({ kind: "provider", id: provider.id, title: label(provider) })}
-            >
-              <BrandIcon brand={providerBrand(provider.id, label(provider), view.models[provider.id])} />
-              <div className="rmain">
-                <div className="rname">{label(provider)}</div>
-                <div className="rprov">{provider.kind === "builtin" ? t("内置服务商") : t("兼容接口")} · {t("{n} 个模型", { n: view.models[provider.id]?.length ?? 0 })}</div>
-              </div>
-              <span className={provider.keyConfigured && connectionStatus[provider.id] !== "failed" ? (connectionStatus[provider.id] === "connected" ? "status-pill provider-status-ok" : "status-pill provider-status-muted") : "status-pill provider-status-bad"}>
-                {provider.keyConfigured ? (connectionStatus[provider.id] === "connected" ? t("已连接") : connectionStatus[provider.id] === "failed" ? t("连接失败") : t("未验证")) : t("未填 Key")}
-              </span>
-              <Icon name="chev" size={15} className="rgo" />
+        <div className="lbl-row">
+          <div className="lbl">{t("已配置的服务商")}</div>
+          {testableCount > 0 ? (
+            <button type="button" className="more" disabled={testingAll} onClick={onTestAll}>
+              {testingAll ? t("检测中…") : t("全部检测")}
             </button>
-          ))}
+          ) : null}
+        </div>
+        <div className="group-card settings-card providers-list">
+          {view.providers.map((provider) => {
+            const conn = connectionStatus[provider.id];
+            const pillCls = !provider.keyConfigured || conn?.status === "failed"
+              ? "status-pill provider-status-bad"
+              : conn?.status === "connected"
+                ? "status-pill provider-status-ok"
+                : "status-pill provider-status-muted";
+            const pillText = !provider.keyConfigured
+              ? t("未填 Key")
+              : conn?.status === "testing"
+                ? t("检测中…")
+                : conn?.status === "connected"
+                  ? conn.ms !== undefined ? `${t("已连接")} · ${conn.ms}ms` : t("已连接")
+                  : conn?.status === "failed"
+                    ? t("连接失败")
+                    : t("未验证");
+            return (
+              <button
+                className="list-row setting-row"
+                key={provider.id}
+                onClick={() => openSub({ kind: "provider", id: provider.id, title: label(provider) })}
+              >
+                <BrandIcon brand={providerBrand(provider.id, label(provider), view.models[provider.id])} />
+                <div className="rmain">
+                  <div className="rname">{label(provider)}</div>
+                  <div className="rprov">{provider.kind === "builtin" ? t("内置服务商") : t("兼容接口")} · {t("{n} 个模型", { n: view.models[provider.id]?.length ?? 0 })}</div>
+                </div>
+                <span className={pillCls}>{pillText}</span>
+                <Icon name="chev" size={15} className="rgo" />
+              </button>
+            );
+          })}
           {pluginProviders.map((provider) => {
             const st = pluginProviderStatus(provider);
             return (
@@ -1379,29 +1495,37 @@ function ClaudeProviderCard() {
   }
 
   const status = view?.status;
+  const savedEnabled = view?.settings.settings.claude?.enabled ?? false;
+  const expanded = draft.enabled || savedEnabled;
   return <Group>
     <div className="lbl">{t("Claude 订阅（经本机 Claude Code）")}</div>
     <div className="formcard">
       <div className="ctl">
         <button className={`tog${draft.enabled ? "" : " off"}`} aria-label={t("启用 Claude 订阅")} aria-pressed={draft.enabled} disabled={!view || busy} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })} />
-        <span className="note">{draft.enabled ? t("已启用") : t("未启用")}{view && draft.enabled !== (view.settings.settings.claude?.enabled ?? false) ? t("（保存后生效）") : ""}</span>
+        <span className="note">{draft.enabled ? t("已启用") : t("未启用")}{view && draft.enabled !== savedEnabled ? t("（保存后生效）") : ""}</span>
       </div>
-      <div className="lbl sub">{t("状态")}</div>
-      <div className={status?.loggedIn ? "okline" : "badline"} role="status">
-        {claudeStatusText(status)}
-      </div>
-      {status?.found && !status.loggedIn ? <div className="note">{t("请在终端执行")} <code>claude auth login</code>{t("，然后重新检测。")}</div> : null}
-      <div className="lbl sub">{t("套餐")}</div>
-      <Select value={draft.plan} disabled={busy || !view} onChange={(value) => setDraft({ ...draft, plan: value as "pro" | "max" })} options={[{ value: "pro", label: "Pro" }, { value: "max", label: "Max" }]} />
-      <div className="lbl sub">{t("Claude Code 程序路径")}</div>
-      <div className="field"><input value={draft.executable} disabled={busy || !view} onChange={(e) => setDraft({ ...draft, executable: e.target.value })} placeholder={status?.executable || t("留空时自动查找")} /></div>
-      <div className="note">{t("用量计入你的 Claude 订阅额度，与 Claude Code 共用。Docker 镜像不支持此功能。")}</div>
-      <div className="sfoot">
-        <button className="hob-btn" disabled={busy} onClick={() => void detect()}>{t("重新检测")}</button>
-        {message ? <span className="note" role="status">{message}</span> : null}
-        <span className="sp" />
-        <button className="hob-btn hob-btn-primary" disabled={busy || !view} onClick={() => void save()}>{t("保存")}</button>
-      </div>
+      {expanded ? (
+        <>
+          <div className="lbl sub">{t("状态")}</div>
+          <div className={status?.loggedIn ? "okline" : "badline"} role="status">
+            {claudeStatusText(status)}
+          </div>
+          {status?.found && !status.loggedIn ? <div className="note">{t("请在终端执行")} <code>claude auth login</code>{t("，然后重新检测。")}</div> : null}
+          <div className="lbl sub">{t("套餐")}</div>
+          <Select value={draft.plan} disabled={busy || !view} onChange={(value) => setDraft({ ...draft, plan: value as "pro" | "max" })} options={[{ value: "pro", label: "Pro" }, { value: "max", label: "Max" }]} />
+          <div className="lbl sub">{t("Claude Code 程序路径")}</div>
+          <div className="field"><input value={draft.executable} disabled={busy || !view} onChange={(e) => setDraft({ ...draft, executable: e.target.value })} placeholder={status?.executable || t("留空时自动查找")} /></div>
+          <div className="note">{t("用量计入你的 Claude 订阅额度，与 Claude Code 共用。Docker 镜像不支持此功能。")}</div>
+          <div className="sfoot">
+            <button className="hob-btn" disabled={busy} onClick={() => void detect()}>{t("重新检测")}</button>
+            {message ? <span className="note" role="status">{message}</span> : null}
+            <span className="sp" />
+            <button className="hob-btn hob-btn-primary" disabled={busy || !view} onClick={() => void save()}>{t("保存")}</button>
+          </div>
+        </>
+      ) : (
+        <div className="note">{claudeStatusText(status)}</div>
+      )}
     </div>
   </Group>;
 }
@@ -1421,7 +1545,7 @@ function ProviderDetail({
   onView: (view: ProvidersView) => void;
   onSaved: (view: ProvidersView, message: string) => void;
   onThinking: (providerId: string, thinking: ModelThinkingView, settings: SettingsFile) => void;
-  onConnection: (id: string, status: "connected" | "failed") => void;
+  onConnection: (id: string, status: "connected" | "failed", ms?: number) => void;
   connectionStatus?: "connected" | "failed";
 }) {
   const provider = view.providers.find((item) => item.id === id);
@@ -1475,7 +1599,7 @@ function AddProvider({
 }: {
   view: ProvidersView;
   onSaved: (view: ProvidersView, message: string) => void;
-  onConnection: (id: string, status: "connected" | "failed") => void;
+  onConnection: (id: string, status: "connected" | "failed", ms?: number) => void;
 }) {
   const [kind, setKind] = useState<"builtin" | "custom" | null>(null);
   const [builtinId, setBuiltinId] = useState<string | null>(null);
@@ -1692,7 +1816,7 @@ function ProviderForm({
   initial: ProviderDraft;
   onSaved: (view: ProvidersView, message: string) => void;
   onView?: (view: ProvidersView) => void;
-  onConnection: (id: string, status: "connected" | "failed") => void;
+  onConnection: (id: string, status: "connected" | "failed", ms?: number) => void;
   onThinking: (thinking: ModelThinkingView, settings: SettingsFile) => void;
   extra?: ReactNode;
   connectionStatus?: "connected" | "failed";
@@ -1731,12 +1855,14 @@ function ProviderForm({
     setBusy(true);
     setError(null);
     setTestStatus(null);
+    const started = performance.now();
     const result = await testProviderConnection(connection);
+    const ms = Math.max(1, Math.round(performance.now() - started));
     setBusy(false);
-    if (!dirty && draft.id) onConnection(draft.id, result ? "failed" : "connected");
+    if (!dirty && draft.id) onConnection(draft.id, result ? "failed" : "connected", result ? undefined : ms);
     if (result) { setTested(null); setError(result); return; }
     setTested(fingerprint);
-    setTestStatus(t("连接成功"));
+    setTestStatus(`${t("连接成功")} · ${ms}ms`);
   };
 
   const rosterControl = (model: { id: string; name?: string; reasoning?: boolean }) => {
@@ -1757,7 +1883,7 @@ function ProviderForm({
           onClick={() => {
             const roster = selected
               ? settings.roster.filter((entry) => entry.ref !== ref)
-              : [...settings.roster, { ref, note: "", scores: guessModelScores({ id: model.id, name: model.name ?? model.id, reasoning: Boolean(model.reasoning) }), scoresConfirmed: false }];
+              : [...settings.roster, { ref, note: "", scores: guessModelScores({ id: model.id, name: model.name ?? model.id, reasoning: Boolean(model.reasoning) }), scoresConfirmed: true }];
             setRosterBusy(true);
             setRosterNotice(null);
             void saveSettings({ models: { roster } }).then((ok) => {
@@ -2199,7 +2325,7 @@ function SubBack({ label }: { label?: string }) {
 
 function ModelsHome({ view, providerNames = {} }: { view: ModelsView; providerNames?: Record<string, string> }) {
   const providers = useApp().settings.settings.providers;
-  const { models, save, roles, feedback } = useModelSettings();
+  const { models, setRoster, save, roles, feedback } = useModelSettings();
   const byRef = new Map(view.models.map((model) => [model.ref, model]));
   const providerLabel = (providerId?: string) => (providerId ? providerNames[providerId] ?? providerId : "");
   const suggestOff = "__suggest_off__";
@@ -2278,31 +2404,70 @@ function ModelsHome({ view, providerNames = {} }: { view: ModelsView; providerNa
             const info = byRef.get(entry.ref);
             const name = info?.name ?? entry.ref;
             const usage = modelUseState(entry, info);
+            const entryRoles = roles(entry.ref);
+            const isConv = models.conversation.ref === entry.ref;
+            const isWork = models.work.ref === entry.ref;
+            const canRemove = entryRoles.length === 0;
             return (
-              <button
-                className={`list-row model-row${info ? "" : " gone"}`}
-                key={entry.ref}
-                onClick={() => openSub({ kind: "model", ref: entry.ref, title: name })}
-              >
-                <span className="mtop">
-                  <BrandIcon size={28} brand={brandForRef(entry.ref, view.models, providers)} />
-                  <span className="mname">{name}</span>
-                  <span className="sp" />
-                  {info ? <CapIcons info={info} /> : <span className="mbad">{t("不可用")}</span>}
-                  <Icon name="chev" size={14} />
-                </span>
-                <span className="mprev">
-                  {roles(entry.ref).map((label) => (
-                    <span className="mrole" key={label}>
-                      {roleLabel(label === t("对话") ? "conversation" : label === t("任务执行") ? "work" : "suggest")}
-                    </span>
-                  ))}
-                  {info?.provider.startsWith("plugin-") ? `${providerLabel(info.provider)} · ` : ""}
-                  {scoreSummary(usage.scores)}
-                  {usage.unconfirmed ? <span className="model-use-warning">{t("请确认用途")}</span> : null}
-                  {!info ? ` · ${t("该模型的服务商已删除或未配置 Key")}` : null}
-                </span>
-              </button>
+              <div className="model-item" key={entry.ref}>
+                <button
+                  className={`list-row model-row${info ? "" : " gone"}`}
+                  onClick={() => openSub({ kind: "model", ref: entry.ref, title: name })}
+                >
+                  <span className="mtop">
+                    <BrandIcon size={28} brand={brandForRef(entry.ref, view.models, providers)} />
+                    <span className="mname">{name}</span>
+                    <span className="sp" />
+                    {info ? <CapIcons info={info} /> : <span className="mbad">{t("不可用")}</span>}
+                    <Icon name="chev" size={14} />
+                  </span>
+                  <span className="mprev">
+                    {entryRoles.map((label) => (
+                      <span className="mrole" key={label}>
+                        {roleLabel(label === t("对话") ? "conversation" : label === t("任务执行") ? "work" : "suggest")}
+                      </span>
+                    ))}
+                    {info?.provider.startsWith("plugin-") ? `${providerLabel(info.provider)} · ` : ""}
+                    {scoreSummary(usage.scores)}
+                    {usage.unconfirmed ? <span className="model-use-warning">{t("请确认用途")}</span> : null}
+                    {!info ? ` · ${t("该模型的服务商已删除或未配置 Key")}` : null}
+                  </span>
+                </button>
+                {(info && (!isConv || !isWork)) || canRemove ? (
+                  <div className="model-quick-actions">
+                    {info && !isConv ? (
+                      <button
+                        type="button"
+                        className="model-qbtn"
+                        disabled={feedback.busy}
+                        onClick={() => save({ conversation: { ref: entry.ref, thinking: fitThinking(info, models.conversation.thinking) } })}
+                      >
+                        {t("设为对话")}
+                      </button>
+                    ) : null}
+                    {info && !isWork ? (
+                      <button
+                        type="button"
+                        className="model-qbtn"
+                        disabled={feedback.busy}
+                        onClick={() => save({ work: { ref: entry.ref, thinking: fitThinking(info, models.work.thinking) } })}
+                      >
+                        {t("设为任务")}
+                      </button>
+                    ) : null}
+                    {canRemove ? (
+                      <button
+                        type="button"
+                        className="model-qbtn danger"
+                        disabled={feedback.busy}
+                        onClick={() => setRoster(models.roster.filter((item) => item.ref !== entry.ref))}
+                      >
+                        {t("移除")}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             );
           })}
           <button className="maddrow" onClick={() => openSub({ kind: "addModels", title: t("添加模型") })}>
@@ -2409,8 +2574,11 @@ function AddModels({ view, providerNames = {} }: { view: ModelsView; providerNam
   const { models, setRoster, roles, update, feedback } = useModelSettings();
   const [query, setQuery] = useState("");
   const chosen = new Set(models.roster.map((entry) => entry.ref));
-  // 服务商一开始都收起，用户点开哪个看哪个
-  const [openGroups, setOpenGroups] = useState<string[]>([]);
+  // 服务商少于等于 3 个时默认全部展开，更多时默认展开第一个，少点一次折叠
+  const [openGroups, setOpenGroups] = useState<string[]>(() => {
+    const all = groupByProvider(view.models).map((group) => group.provider);
+    return all.length <= 3 ? all : all.slice(0, 1);
+  });
   const groups = groupByProvider(filterModels(view.models, query));
   const searching = query.trim().length > 0;
   const toggleGroup = (provider: string) =>
@@ -2421,7 +2589,7 @@ function AddModels({ view, providerNames = {} }: { view: ModelsView; providerNam
         ? models.roster.filter((entry) => entry.ref !== model.ref)
         : [
             ...models.roster,
-            { ref: model.ref, scores: guessModelScores(model), note: "", scoresConfirmed: false, ...(model.reasoning ? { thinking: fitThinking(model, "medium") } : {}) },
+            { ref: model.ref, scores: guessModelScores(model), note: "", scoresConfirmed: true, ...(model.reasoning ? { thinking: fitThinking(model, "medium") } : {}) },
           ],
     );
 
@@ -3868,10 +4036,19 @@ function SearchProviderDetail({ provider, configured, busy, save }: { provider: 
   );
 }
 
-const REPO_URL = "https://github.com/FFatTiger/hob";
+const REPO_URL = "https://github.com/Usernames686/hob/tree/my-hob";
+const UPSTREAM_REPO_URL = "https://github.com/FFatTiger/hob";
 
 /** 关于页：版本、更新状态、数据目录，以及仓库入口。 */
-export function AboutView({ about }: { about: AboutInfo | null }) {
+export function AboutView({
+  about,
+  updateMuted = false,
+  onToggleUpdateMuted,
+}: {
+  about: AboutInfo | null;
+  updateMuted?: boolean;
+  onToggleUpdateMuted?: (muted: boolean) => void;
+}) {
   const [copied, setCopied] = useState(false);
   if (!about) return <Empty>{t("正在读取版本信息…")}</Empty>;
   const update = about.update;
@@ -3879,7 +4056,7 @@ export function AboutView({ about }: { about: AboutInfo | null }) {
     <>
       <PageHead title={t("关于")} desc={t("Hob 的版本与数据目录。")} />
       <div className="about-hero">
-        <Avatar sprite="hob" size={72} free live interactive follow />
+        <Avatar sprite="hob" size={72} free live interactive follow ambient />
         <div className="about-hero-meta">
           <div className="about-hero-title">
             <span>Hob</span>
@@ -3893,21 +4070,33 @@ export function AboutView({ about }: { about: AboutInfo | null }) {
           <span className="k">{t("Hob 版本")}</span>
           <span className="v">{about.version}</span>
         </div>
-        {update?.status === "available" ? (
-          <a className="kvrow linkrow" href={`${REPO_URL}/releases/tag/v${update.latest}`} target="_blank" rel="noreferrer">
+        {!updateMuted && update?.status === "available" ? (
+          <a className="kvrow linkrow" href={`${UPSTREAM_REPO_URL}/releases/tag/v${update.latest}`} target="_blank" rel="noreferrer">
             <span className="k update-available">{t("有新版本 {version}", { version: update.latest })}</span>
             <span className="v">
               <span className="link">{t("查看更新内容")}</span>
               <Icon name="out" size={13} />
             </span>
           </a>
-        ) : update?.status === "up-to-date" ? (
+        ) : !updateMuted && update?.status === "up-to-date" ? (
           <div className="kvrow">
             <span className="k update-status">{t("已是最新版本")}</span>
           </div>
-        ) : update?.status === "error" ? (
+        ) : !updateMuted && update?.status === "error" ? (
           <div className="kvrow">
             <span className="k update-status update-error">{t("检查更新失败：{reason}", { reason: update.error })}</span>
+          </div>
+        ) : null}
+        {onToggleUpdateMuted ? (
+          <div className="kvrow">
+            <span className="k">{t("显示更新提示")}</span>
+            <button
+              type="button"
+              className={`tog${updateMuted ? " off" : ""}`}
+              aria-label={t("显示更新提示")}
+              aria-pressed={!updateMuted}
+              onClick={() => onToggleUpdateMuted(!updateMuted)}
+            />
           </div>
         ) : null}
         <div className="kvrow kvrow-copy">
@@ -3931,7 +4120,7 @@ export function AboutView({ about }: { about: AboutInfo | null }) {
             </button>
           </span>
         </div>
-        <LinkRow icon="github" label="GitHub" value="FFatTiger/hob" href={REPO_URL} />
+        <LinkRow icon="github" label="GitHub" value="Usernames686/hob · my-hob" href={REPO_URL} />
       </div>
     </>
   );
@@ -3944,5 +4133,5 @@ function AboutSection() {
     void loadAbout().then(setAbout);
   }, []);
   const current = about ? { ...about, ...(s.update ? { update: s.update } : {}) } : null;
-  return <AboutView about={current} />;
+  return <AboutView about={current} updateMuted={s.updateMuted} onToggleUpdateMuted={setUpdateMuted} />;
 }

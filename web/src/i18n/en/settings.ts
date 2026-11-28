@@ -161,4 +161,12 @@ export const settingsEn: Record<string, TranslationEntry> = {
   "账号安全": "Account security",
   "请输入 1 到 1440 之间的整数。": "Enter a whole number between 1 and 1440.",
   "你的个人 AI 助手工作台": "Your personal AI assistant workspace",
+  "已配置": "Configured",
+  "全部检测": "Test all",
+  "检测中…": "Testing…",
+  "设为对话": "Set as chat",
+  "设为任务": "Set as job",
+  "显示更新提示": "Show update notices",
+  "对话框显示模型选择": "Show model picker in composer",
+  "开启后在聊天输入框底部直接显示模型切换按钮；关闭时仍可在「+」菜单中切换。": "Show a model switcher pill at the bottom of the chat composer. When off, you can still switch models from the “+” menu.",
 };

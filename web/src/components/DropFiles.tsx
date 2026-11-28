@@ -3,6 +3,7 @@
 import { t } from "../../../shared/i18n.ts";
 import { useEffect, useRef, useState } from "react";
 import { droppedFiles, isFileDrag } from "../dropped-files.ts";
+import { Icon } from "../icons.tsx";
 import { attach, useApp } from "../store.ts";
 
 /** 这么久没有任何拖动事件就当已经拖出去了：拖到窗口外松手时有些浏览器只补 dragleave，不补 drop，计数会停在半路。 */
@@ -81,6 +82,7 @@ export function DropFiles() {
   return (
     <div className="dropmask" role="status">
       <div className="dropcard">
+        <div className="dropcard-ico" aria-hidden="true"><Icon name="file" size={20} /></div>
         <div className="t">{t("松开即可上传")}</div>
         <div className="d">{targetName ? t("文件将加入与 {name} 的输入框，发送时一并发送", { name: targetName }) : t("文件将加入输入框，发送时一并发送")}</div>
       </div>
